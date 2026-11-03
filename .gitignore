@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+._*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# OCR helper, compiled from scripts/ocr.swift on first use
+bin/
+
+# Local work output and secrets
+work/
+WORK/
+.env
+.env.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
