@@ -11,6 +11,7 @@ import functools
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -223,11 +224,32 @@ TESS_MIN_CONF = 50
 TESS_UPSCALE = 2
 
 
+def _tight(ch: str) -> bool:
+    """Thai or CJK: scripts written without spaces between words."""
+    return "\u0e00" <= ch <= "\u0e7f" or ch >= "\u3000"
+
+
 def _no_space(a: str, b: str) -> bool:
     """Thai and CJK write words without spaces; Tesseract still splits them into words."""
-    def tight(ch: str) -> bool:
-        return "฀" <= ch <= "๿" or ch >= "　"
-    return bool(a and b) and tight(a[-1]) and tight(b[0])
+    return bool(a and b) and _tight(a[-1]) and _tight(b[0])
+
+
+# A line with no word of 3+ letters or digits is mostly texture read as letters ("pe", "oS",
+# "Fr") unless Tesseract is very sure of it. Numbers count as one word with their
+# punctuation ("11.3s", "18:40", "kb/s"), and lines with 2+ digits are always kept, since
+# times, sizes and counts are what checks look for. Measured on 153 frames against Vision:
+# junk lines 277 -> 156 (much of the rest is real text Vision skips as too small), 99% of
+# real lines kept, no line with a number lost. Thai/CJK lines are kept: no spaces between words.
+SHORT_LINE_MIN_CONF = 0.9
+WORD_RE = re.compile(r"[^\W_]+(?:[.,:/][^\W_]+)*")
+
+
+def _looks_like_text(text: str, conf: float) -> bool:
+    if conf >= SHORT_LINE_MIN_CONF or any(_tight(ch) for ch in text):
+        return True
+    if sum(ch.isdigit() for ch in text) >= 2:
+        return True
+    return max(map(len, WORD_RE.findall(text)), default=0) >= 3
 
 
 def tesseract_lines(images: list[Path], lang: str) -> dict[str, list[dict]]:
@@ -269,9 +291,12 @@ def tesseract_lines(images: list[Path], lang: str) -> dict[str, list[dict]]:
         y0 = min(w[3] for w in words)
         x1 = max(w[2] + w[4] for w in words)
         y1 = max(w[3] + w[5] for w in words)
+        conf = round(sum(w[1] for w in words) / len(words) / 100, 3)
+        if not _looks_like_text(text, conf):
+            continue
         out[str(images[page])].append({
             "text": text,
-            "conf": round(sum(w[1] for w in words) / len(words) / 100, 3),
+            "conf": conf,
             "box": [round(x0 / pw, 3), round(y0 / ph, 3), round((x1 - x0) / pw, 3), round((y1 - y0) / ph, 3)],
         })
     return out
