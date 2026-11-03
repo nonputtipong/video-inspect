@@ -7,6 +7,7 @@ Safety rules kept in one place:
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import platform
@@ -97,6 +98,62 @@ def probe(video: str) -> dict:
             # file start timestamp (usually 0): `-ss T` means start_s + T on the frames' own clock
             "start_s": float(d.get("format", {}).get("start_time") or 0),
             "has_audio": any(s.get("codec_type") == "audio" for s in d.get("streams", []))}
+
+
+# ---------- seeking ----------
+
+# Containers with no seek index. ffmpeg's -ss lands near the target, but decoding can only
+# start at the next keyframe, so everything before it is lost: on a .ts with 2 s between
+# keyframes, frames came out up to 1.6 s late and the last ones were missing. For these,
+# seek one keyframe gap early and trim the lead-in exactly. Other formats seek exactly.
+LOOSE_SEEK = {"mpegts", "mpeg", "mpegvideo", "h264", "hevc"}
+
+
+@functools.lru_cache(maxsize=None)
+def seek_margin(video: str) -> float:
+    """Seconds to start early so a seek lands before the target: 0 for indexed formats, else
+    the longest keyframe gap in the first 2 minutes (read from packets, no decoding) + 0.5 s."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=format_name", "-of", "csv=p=0", video],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if not set(r.stdout.strip().split(",")) & LOOSE_SEEK:
+        return 0.0
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-read_intervals", "%+120",
+                        "-show_entries", "packet=pts_time,flags", "-of", "csv=p=0", video],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    keys = []
+    for row in r.stdout.splitlines():
+        t, _, flags = row.partition(",")
+        if "K" in flags and t not in ("", "N/A"):
+            keys.append(float(t))
+    keys.sort()
+    gap = max((b - a for a, b in zip(keys, keys[1:])), default=10.0)
+    return round(gap + 0.5, 3)
+
+
+def seek_input(video: str, start: float | None, end: float | None) -> tuple[list[str], tuple]:
+    """Input -ss/-to for a range, plus what trim() must cut so the range is exact.
+
+    On loose-seek files -to overshoots by as much as the seek missed, so reading runs one
+    margin past the end and trim() cuts the end too. Elsewhere the args are the plain
+    -ss/-to and trim() is empty."""
+    margin = seek_margin(video)
+    lead = min(margin, start) if start is not None else 0.0
+    args = ["-ss", f"{start - lead:.3f}"] if start is not None else []
+    if end is not None:
+        args += ["-to", f"{end + margin:.3f}"]
+    length = end - (start or 0.0) if (end is not None and margin) else None
+    return args, (lead, length)
+
+
+def trim(cut: tuple, audio: bool = False) -> str:
+    """Filter prefix for seek_input()'s cut: drop the lead-in, stop at the range end, and put
+    the clock back on the range start. Empty when nothing needs cutting."""
+    lead, length = cut
+    if not lead and length is None:
+        return ""
+    a = "a" if audio else ""
+    span = f"start={lead:.3f}" + (f":end={lead + length:.3f}" if length is not None else "")
+    return f"{a}trim={span},{a}setpts=PTS-{lead:.3f}/TB,"
 
 
 # ---------- OCR (macOS Vision, or tesseract elsewhere) ----------

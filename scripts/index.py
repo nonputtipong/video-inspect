@@ -53,11 +53,6 @@ OCR_BATCH = 40
 SILENCE_RE = re.compile(r"silence_(start|end): (-?[\d.]+)")
 
 
-def seek_args(start: float | None, end: float | None) -> list[str]:
-    return (["-ss", f"{start:.3f}"] if start is not None else []) + \
-           (["-to", f"{end:.3f}"] if end is not None else [])
-
-
 def read_metadata(path: Path) -> list[dict]:
     """Parse an ffmpeg `metadata=print:file=` log into [{"t": seconds, key: number}].
     Values that aren't finite numbers (blurdetect gives nan on flat frames) are left out."""
@@ -85,18 +80,19 @@ def measure(video: str, start: float | None, end: float | None, with_audio: bool
 
     ffmpeg runs inside `tmp` and writes its logs under bare file names: a full Windows
     path (C:\\...) inside a filter option would be misread as more filter syntax."""
+    seek, cut = common.seek_input(video, start, end)
     video_graph = (
-        "[0:v]scale=160:-2,split[cut][look];"
+        f"[0:v]{common.trim(cut)}scale=160:-2,split[cut][look];"
         "[cut]select='gte(scene,0)',metadata=print:key=lavfi.scene_score:file=scene.txt[c];"
         f"[look]fps={SAMPLES_PER_S},signalstats,blurdetect=block_width=16:block_height=16,"
         "metadata=print:file=stats.txt[l]")
-    jobs = [["ffmpeg", "-hide_banner", "-loglevel", "error", *seek_args(start, end), "-i", video,
+    jobs = [["ffmpeg", "-hide_banner", "-loglevel", "error", *seek, "-i", video,
              "-filter_complex", video_graph,
              "-map", "[c]", "-f", "null", "-", "-map", "[l]", "-f", "null", "-"]]
     if with_audio:
-        jobs.append(["ffmpeg", "-hide_banner", "-loglevel", "info", *seek_args(start, end),
+        jobs.append(["ffmpeg", "-hide_banner", "-loglevel", "info", *seek,
                      "-i", video, "-vn", "-af",
-                     f"silencedetect=noise=-35dB:d={min_silence},ebur128=metadata=1,"
+                     f"{common.trim(cut, audio=True)}silencedetect=noise=-35dB:d={min_silence},ebur128=metadata=1,"
                      "ametadata=print:key=lavfi.r128.M:file=loud.txt", "-f", "null", "-"])
     procs = [subprocess.Popen(cmd, cwd=tmp, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                               text=True, encoding="utf-8", errors="replace") for cmd in jobs]
@@ -212,8 +208,9 @@ def read_onscreen(video: str, start: float | None, end: float | None, span: floa
     width = "min(1280,iw)" + (f"*{common.TESS_UPSCALE}" if backend == "tesseract" else "")
     folder = tmp / "ocr"
     folder.mkdir()
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", *seek_args(start, end), "-i", video,
-                    "-vf", f"fps={rate},scale='{width}':-2", "-q:v", "3", "o_%06d.jpg"],
+    seek, cut = common.seek_input(video, start, end)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", *seek, "-i", video,
+                    "-vf", f"{common.trim(cut)}fps={rate},scale='{width}':-2", "-q:v", "3", "o_%06d.jpg"],
                    cwd=folder, capture_output=True)
     frames = sorted(folder.glob("o_*.jpg"))
 

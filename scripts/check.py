@@ -129,8 +129,10 @@ def picture_scan(video: str, fps: float, out: Path, args, shots: list[dict], res
         for t in strips[:20]:
             sdir.mkdir(exist_ok=True)
             p = sdir / f"strip_{t:07.3f}.jpg"
-            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{max(0.0, t - 2 / fps):.4f}", "-i", video, "-vf",
-                            "scale=180:-1,tile=6x1:padding=4", "-frames:v", "1", "-update", "1", str(p)])
+            first = max(0.0, t - 2 / fps)
+            lead = min(common.seek_margin(video), first)   # 0 except on .ts-like files
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-ss", f"{first - lead:.4f}", "-i", video, "-vf",
+                            f"{common.trim((lead, None))}scale=180:-1,tile=6x1:padding=4", "-frames:v", "1", "-update", "1", str(p)])
             rows.append(f"  - strip ({common.fmt_ts(t)}, 6 frames from 2 frames before): `{p}`")
 
         shot_rows = []

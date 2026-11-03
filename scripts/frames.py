@@ -64,6 +64,7 @@ def grab(video: str, folder: Path, width: int, times: list[float], origin: float
     """The first frame at or after each time (seconds on the video's clock from 0), like an
     accurate seek would give. `origin` is the file's start timestamp (usually 0)."""
     want = sorted(set(times))
+    early = common.seek_margin(video)
     stretches: list[list[float]] = []
     for t in want:
         if stretches and t - stretches[-1][-1] <= JOIN_GAP_S and len(stretches[-1]) < MAX_PER_STRETCH:
@@ -73,7 +74,7 @@ def grab(video: str, folder: Path, width: int, times: list[float], origin: float
 
     def decode(k: int) -> list[tuple[float, str]]:
         part = stretches[k]
-        lead = min(0.05, part[0])
+        lead = min(max(0.05, early), part[0])   # select= then keeps exactly the wanted frames
         tests = "+".join(f"gte(t,{t + origin:.6f})*(isnan(prev_t)+lt(prev_t,{t + origin:.6f}))" for t in part)
         r = run(["ffmpeg", "-hide_banner", "-loglevel", "info", "-copyts",
                  "-ss", f"{part[0] - lead:.6f}", "-t", f"{part[-1] - part[0] + lead + 1:.6f}", "-i", video,
@@ -97,9 +98,9 @@ def grab(video: str, folder: Path, width: int, times: list[float], origin: float
 
 
 def keyframes(video: str, folder: Path, width: int, start: float | None, end: float | None) -> list[dict]:
-    r = run(["ffmpeg", "-hide_banner", "-loglevel", "info", "-skip_frame", "nokey",
-             *shot_index.seek_args(start, end), "-i", video,
-             "-vf", f"scale={width}:-2,showinfo", "-fps_mode", "vfr", "-q:v", "4", "k_%05d.jpg"], cwd=folder)
+    seek, cut = common.seek_input(video, start, end)
+    r = run(["ffmpeg", "-hide_banner", "-loglevel", "info", "-skip_frame", "nokey", *seek, "-i", video,
+             "-vf", f"{common.trim(cut)}scale={width}:-2,showinfo", "-fps_mode", "vfr", "-q:v", "4", "k_%05d.jpg"], cwd=folder)
     stamps = [float(x) for x in PTS_RE.findall(r.stderr)]
     files = sorted(folder.glob("k_*.jpg"))
     return [{"path": str(f), "t_ms": int(round(((stamps[i] if i < len(stamps) else 0.0) + (start or 0.0)) * 1000))}
@@ -107,8 +108,9 @@ def keyframes(video: str, folder: Path, width: int, start: float | None, end: fl
 
 
 def uniform(video: str, folder: Path, width: int, fps: float, start: float | None, end: float | None) -> list[dict]:
-    run(["ffmpeg", "-hide_banner", "-loglevel", "error", *shot_index.seek_args(start, end), "-i", video,
-         "-vf", f"fps={fps},scale={width}:-2", "-q:v", "4", "u_%05d.jpg"], cwd=folder)
+    seek, cut = common.seek_input(video, start, end)
+    run(["ffmpeg", "-hide_banner", "-loglevel", "error", *seek, "-i", video,
+         "-vf", f"{common.trim(cut)}fps={fps},scale={width}:-2", "-q:v", "4", "u_%05d.jpg"], cwd=folder)
     return [{"path": str(f), "t_ms": int(round(((start or 0.0) + i / fps) * 1000))}
             for i, f in enumerate(sorted(folder.glob("u_*.jpg")))]
 
