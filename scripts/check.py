@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Final quality check of a rendered video before posting. One report, PASS or FIX per item.
+"""Final quality check of a rendered video before posting. One report, PASS or FIX per item
+(SKIPPED when a check couldn't run here, e.g. no OCR engine or no local Whisper).
 
 Checks (each optional input switches its check on):
   specs     size, fps, duration, integrated loudness, true peak
@@ -175,7 +176,7 @@ def main() -> None:
     video = str(Path(args.video).expanduser().resolve())
     out = Path(args.out_dir).expanduser()
     out.mkdir(parents=True, exist_ok=True)
-    res: list[tuple[str, bool, str]] = []
+    res: list[tuple[str, bool | None, str]] = []   # None = couldn't run here: SKIPPED, not FIX
 
     m = common.probe(video)
     w, h = (int(x) for x in args.expect_size.lower().split("x"))
@@ -218,11 +219,17 @@ def main() -> None:
         res.append(("shots", abs(shots - args.expect_shots) <= max(2, args.expect_shots // 10),
                     f"{shots} cuts found (storyboard {args.expect_shots}; locked-camera moves aren't cuts)"))
     onscreen = idx.get("onscreen_text", [])
+    # Without an OCR engine (or with index.py failing) no text was read at all, so "term
+    # missing" or "nothing in the overlay zones" would be a guess, not a finding.
+    no_ocr = ("" if idx.get("ocr_backend") else
+              "index.py failed" if not idx else "no OCR engine (needs macOS Vision or Tesseract)")
 
     pic_rows, shot_rows = picture_scan(video, m["fps"], out, args, idx.get("shots", []), res)
 
     term_rows = []
-    if args.terms:
+    if args.terms and no_ocr:
+        res.append(("on-screen terms", None, f"skipped: {no_ocr}"))
+    elif args.terms:
         terms = [t.strip() for t in Path(args.terms).read_text(encoding="utf-8").splitlines() if t.strip()]
         seen = [o["text"] for o in onscreen]
         missing = typos = 0
@@ -254,7 +261,8 @@ def main() -> None:
         for name, (zx0, zy0, zx1, zy1) in ZONES.items():
             if x0 < zx1 and x1 > zx0 and y0 < zy1 and y1 > zy0:
                 zone_hits.append(f"- {common.fmt_ts(o['start_s'])}–{common.fmt_ts(o['end_s'])} \"{o['text']}\" in {name}")
-    res.append(("overlay zones", not zone_hits, f"{len(zone_hits)} text items inside app-overlay zones"))
+    res.append(("overlay zones", None, f"skipped: {no_ocr}") if no_ocr else
+               ("overlay zones", not zone_hits, f"{len(zone_hits)} text items inside app-overlay zones"))
 
     diff_rows = []
     if args.script:
@@ -281,11 +289,16 @@ def main() -> None:
                         f"{f', {len(numbers)} number-format notes' if numbers else ''} ({tx['source']} transcript)"))
             diff_rows += [r + " (number format, likely fine)" for r in numbers]
         else:
-            res.append(("script vs speech", False, "no transcript (local Whisper unavailable); not checked"))
+            res.append(("script vs speech", None, "skipped: no transcript (no local Whisper worked offline; "
+                                                  "run transcript.py to see why)"))
 
-    verdict = "PASS" if all(ok for _, ok, _ in res) else "FIX"
-    md = [f"# Check: {Path(video).name}", "", f"VERDICT: {verdict}", "", "| check | result | detail |", "|---|---|---|"]
-    md += [f"| {n} | {'PASS' if ok else 'FIX'} | {d} |" for n, ok, d in res]
+    verdict = "FIX" if any(ok is False for _, ok, _ in res) else "PASS"
+    skipped = [n for n, ok, _ in res if ok is None]
+    status = {True: "PASS", False: "FIX", None: "SKIPPED"}
+    md = [f"# Check: {Path(video).name}", "",
+          f"VERDICT: {verdict}" + (f" ({len(skipped)} not checked: {', '.join(skipped)})" if skipped else ""),
+          "", "| check | result | detail |", "|---|---|---|"]
+    md += [f"| {n} | {status[ok]} | {d} |" for n, ok, d in res]
     if pic_rows:
         md += ["", "## Picture timeline", ""] + pic_rows
     md += ["", "## Per-shot picture", "", "luma 0–1 and mean saturation, medians over each shot (caption band included).", "",
@@ -298,8 +311,11 @@ def main() -> None:
         md += ["", "## Script vs speech differences", ""] + diff_rows[:60]
     md += ["", f"Shot list and on-screen text timeline: `{work / 'index.md'}`."]
     (out / "check.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    (out / "check.json").write_text(json.dumps({"verdict": verdict, "checks": [
-        {"name": n, "pass": ok, "detail": d} for n, ok, d in res]}, indent=1), encoding="utf-8")
+    report = {"verdict": verdict, "checks": [
+        {"name": n, "pass": ok, "detail": d, **({"skipped": True} if ok is None else {})} for n, ok, d in res]}
+    if skipped:
+        report["skipped"] = skipped
+    (out / "check.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"CHECK: {(out / 'check.md').resolve()}")
 
 

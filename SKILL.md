@@ -59,7 +59,7 @@ Picture checks run on every frame, with the caption band (`--mask-band 0.46-0.56
 - A 6-frame strip is saved under `WORK/strips/` for every FIX moment, plus a per-shot luma and saturation table.
 - Self-check: `uv run --no-project --with numpy python -I SKILL_DIR/scripts/test_check_picture.py`.
 
-Read `check.md`. FIX items need fixing before posting. Shot counts only see hard cuts, not camera moves inside one shot, so treat a mismatch as something to look into. Overlay-zone hits are text that the app's buttons or caption bar may cover; check the frames at those times. Then build `frames.py` grids around any FIX to confirm it by eye.
+Read `check.md`. FIX items need fixing before posting. SKIPPED items couldn't run on this machine (no OCR engine, or no local Whisper for the script check); tell the user they weren't checked rather than calling them passed. Shot counts only see hard cuts, not camera moves inside one shot, so treat a mismatch as something to look into. Overlay-zone hits are text that the app's buttons or caption bar may cover; check the frames at those times. Then build `frames.py` grids around any FIX to confirm it by eye.
 
 ### Study reference videos
 `python3 -I SKILL_DIR/scripts/study.py V1 V2 ... --out-dir WORK` writes a table with cuts per minute, median shot, sound hits per minute, silence %, words and words per minute, plus per-video cut times, hit times and the labels in the upper frame. Pair it with `frames.py` grids to see what each cut shows.

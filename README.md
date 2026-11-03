@@ -7,7 +7,7 @@ The scripts do the measuring. Claude does the judging.
 ## What it does
 
 - **Understand a video.** It builds a shot index (cuts, motion, light, sound hits, silences), on-screen text with screen positions, timestamped frame grids and a transcript, so Claude can summarize the video and cite times.
-- **Check a render before posting.** It produces one PASS/FIX report covering size, fps, duration, loudness (LUFS) and true peak, silences, black, frozen or glitch frames, shot count, label spelling, text hidden under TikTok/Reels/Shorts buttons, and script vs speech.
+- **Check a render before posting.** It produces one PASS/FIX report (SKIPPED for checks a missing tool can't run) covering size, fps, duration, loudness (LUFS) and true peak, silences, black, frozen or glitch frames, shot count, label spelling, text hidden under TikTok/Reels/Shorts buttons, and script vs speech.
 - **Study reference videos.** It measures cuts per minute, median shot length, sound hits, silence %, words per minute and an on-screen label timeline.
 - **Compare stills with references.** It makes side-by-side boards plus measured brightness, contrast, saturation, warmth, shadows, highlights, fine detail and palette, and flags where a still falls outside the references' range.
 
