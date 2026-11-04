@@ -258,15 +258,23 @@ def tesseract_lines(images: list[Path], lang: str) -> dict[str, list[dict]]:
     The batch is a text file listing the images; TSV numbers them by page_num. Page
     segmentation 11 (sparse text) suits video frames: captions and labels scattered
     over a picture, not a page of paragraphs. Boxes come back 0-1, top-left origin.
+
+    Tesseract on Windows opens files through the ANSI code page, so a path with Thai (or
+    any non-Latin) characters, such as a temp folder under a Thai user name, reads as
+    nothing. It runs inside the images' folder and gets bare file names instead.
     """
     if not images:
         return {}
-    listing = images[0].parent / f"_tess_{os.getpid()}_{id(images)}.txt"
-    listing.write_text("".join(f"{p.resolve()}\n" for p in images), encoding="utf-8")
+    folder = images[0].parent
+    names = [p.name if p.parent == folder else str(p.resolve()) for p in images]
+    listing = folder / f"_tess_{os.getpid()}_{id(images)}.txt"
+    listing.write_text("".join(f"{n}\n" for n in names), encoding="utf-8")
     env = {**os.environ, "OMP_THREAD_LIMIT": "1"}   # callers already run batches in parallel
-    r = subprocess.run(["tesseract", str(listing), "stdout", "-l", lang, "--psm", "11", "tsv"],
+    r = subprocess.run(["tesseract", listing.name, "stdout", "-l", lang, "--psm", "11", "tsv"], cwd=folder,
                        capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
     listing.unlink()
+    if r.returncode or len(r.stdout.splitlines()) < 2:
+        print(f"[ocr] tesseract read nothing (exit {r.returncode}): {r.stderr.strip()[-300:]}", file=sys.stderr)
     pages: dict[int, tuple[int, int]] = {}
     lines: dict[tuple, list[tuple]] = {}
     for row in r.stdout.splitlines()[1:]:
