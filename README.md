@@ -23,7 +23,7 @@ The scripts do the measuring. Claude does the judging.
   - or [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) on any platform, also run through `uv` (`uv run --with faster-whisper`), so nothing is installed into your system Python. The first run needs `--allow-network` to download the package and model (`base` by default; set `WHISPER_MODEL`, for example `small`, for a different one). After that it runs offline.
   - or ElevenLabs (paid). It is off unless you pass `--source elevenlabs --allow-paid` **and** set `VIDEO_INSPECT_ALLOW_PAID=1`. The key comes from `ELEVENLABS_API_KEY` in your shell. `.env` files are never read.
 
-It works best on macOS (Apple Silicon). On Linux and Windows, use Tesseract and faster-whisper. On Windows, run the scripts with `python` or `py -3` instead of `python3`. Windows support is written for but not yet tested on a Windows machine.
+It works best on macOS (Apple Silicon). On Linux and Windows, use Tesseract and faster-whisper. On Windows, run the scripts with `python` or `py -3` instead of `python3`. Every script is tested on Windows, Linux and macOS by GitHub Actions (see Usage), including file and temp-folder paths with Thai characters.
 
 ## Installation
 
