@@ -33,6 +33,12 @@ Clone it into your Claude Code skills folder:
 git clone https://github.com/nonputtipong/video-inspect.git ~/.claude/skills/video-inspect
 ```
 
+On Windows (PowerShell), the skills folder is under your user profile:
+
+```powershell
+git clone https://github.com/nonputtipong/video-inspect.git "$env:USERPROFILE\.claude\skills\video-inspect"
+```
+
 Claude Code picks it up the next time a session starts. Then just ask, for example "check this render before I post it" or "watch this video and summarize it".
 
 ## Usage

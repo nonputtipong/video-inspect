@@ -43,6 +43,8 @@ reason isn't stated. Pictures alone produce confident, plausible, wrong stories.
 On clips up to 3 minutes, frames.py keeps at least one frame every 0.5 s (`--max-gap`), so locked-camera
 animation doesn't lose beats. Grids can't show easing or velocity; for animation quality, look at short zoomed ranges or ask the user to watch.
 
+Other `frames.py` options: `--budget N` caps frames for the whole run (default 512, raised to one per shot up to 2048; 0 = no cap), `--max-grids N` caps grids, and both thin frames evenly rather than cutting the end. `--force keyframe` uses the encoder's keyframes and `--force uniform` a fixed rate (`--fps`); on variable-frame-rate screen recordings uniform labels can be a few hundred ms off, so prefer the default. `--no-dedup` keeps near-duplicate frames, `--no-labels` leaves off the time stamps, `--cell-width` sets cell size (default 480 px).
+
 ### Check a render before posting
 ```bash
 python3 -I SKILL_DIR/scripts/check.py VIDEO --out-dir WORK \
@@ -59,10 +61,12 @@ Picture checks run on every frame, with the caption band (`--mask-band 0.46-0.56
 - A 6-frame strip is saved under `WORK/strips/` for every FIX moment, plus a per-shot luma and saturation table.
 - Self-check: `uv run --no-project --with numpy python -I SKILL_DIR/scripts/test_check_picture.py`.
 
+Tolerances: loudness passes within `--lufs-tol` (default 1 LU) of `--expect-lufs`; a picture jump within `--cut-tol` (default 0.05 s) of a cut counts as that cut (planned cuts with `--cuts`, else detected ones). `--transcript FILE` reuses an existing transcript instead of making one, and `--lang` sets the speech and on-screen text language (default en).
+
 Read `check.md`. FIX items need fixing before posting. SKIPPED items couldn't run on this machine (no OCR engine, or no local Whisper for the script check); tell the user they weren't checked rather than calling them passed. Shot counts only see hard cuts, not camera moves inside one shot, so treat a mismatch as something to look into. Overlay-zone hits are text that the app's buttons or caption bar may cover; check the frames at those times. Then build `frames.py` grids around any FIX to confirm it by eye.
 
 ### Study reference videos
-`python3 -I SKILL_DIR/scripts/study.py V1 V2 ... --out-dir WORK` writes a table with cuts per minute, median shot, sound hits per minute, silence %, words and words per minute, plus per-video cut times, hit times and the labels in the upper frame. Pair it with `frames.py` grids to see what each cut shows.
+`python3 -I SKILL_DIR/scripts/study.py V1 V2 ... --out-dir WORK` writes a table with cuts per minute, median shot, sound hits per minute, silence %, words and words per minute, plus per-video cut times, hit times and the labels in the upper frame. Pair it with `frames.py` grids to see what each cut shows. `--no-transcript` and `--no-ocr` skip the slow parts (words then read 0, wpm `–`, labels "none found"); `--lang` sets the language (default en).
 
 ### Compare stills with reference images
 `python3 -I SKILL_DIR/scripts/compare.py --stills a.png b.png --refs refs_dir --out-dir WORK`, then read
