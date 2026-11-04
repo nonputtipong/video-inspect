@@ -68,6 +68,12 @@ Self-test for the picture checks:
 uv run --no-project --with numpy python -I scripts/test_check_picture.py
 ```
 
+End-to-end smoke test (every script on a generated clip; set `VI_SMOKE_TRANSCRIPT=1` to include faster-whisper). GitHub Actions runs it on Windows, Linux and macOS with Python 3.9 and 3.13:
+
+```bash
+python3 -I tests/smoke_test.py
+```
+
 ## Project structure
 
 ```
@@ -82,6 +88,10 @@ scripts/
   compare.py                  Stills vs reference images: boards and look stats
   ocr.swift                   macOS Vision OCR helper (compiled to bin/ on first use)
   test_check_picture.py       Self-test for check.py's frozen and glitch frame detection
+tests/
+  smoke_test.py               End-to-end test of every script (run by GitHub Actions)
+  fixtures/text.png           Printed text the smoke test overlays for OCR
+.github/workflows/test.yml    CI on Windows, Linux and macOS
 ```
 
 ## Safety defaults

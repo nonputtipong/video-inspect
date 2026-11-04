@@ -1,0 +1,61 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install ffmpeg and Tesseract (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg tesseract-ocr
+
+      - name: Install ffmpeg and Tesseract (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg tesseract
+
+      - name: Install ffmpeg and Tesseract (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ffmpeg tesseract -y --no-progress
+          "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          # A temp folder with a Thai name and a space, like a Windows account named in Thai
+          $tmp = "C:\วิดีโอ temp"
+          New-Item -ItemType Directory -Force -Path $tmp | Out-Null
+          "TEMP=$tmp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "TMP=$tmp" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Tool versions
+        run: |
+          ffmpeg -version
+          tesseract --version
+          python --version
+
+      - name: Self-test (check.py picture scan)
+        run: uv run --no-project --python ${{ matrix.python }} --with numpy python -I scripts/test_check_picture.py
+
+      - name: Smoke test (every script on a generated clip)
+        env:
+          # faster-whisper is downloaded once per job; run it on one Python per OS
+          VI_SMOKE_TRANSCRIPT: ${{ matrix.python == '3.13' && '1' || '0' }}
+        run: python -I tests/smoke_test.py
