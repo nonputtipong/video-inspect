@@ -21,6 +21,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Windows pipes default to the ANSI code page and `python -I` ignores PYTHONUTF8, so printing
+# the Thai folder name would crash (the scripts get the same fix from common.py).
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 TEXT_PNG = Path(__file__).resolve().parent / "fixtures" / "text.png"   # printed text for OCR
 CUT_AT = 3.0
