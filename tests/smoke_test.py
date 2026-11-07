@@ -100,6 +100,16 @@ def main() -> None:
         check(r.returncode == 0 and man["grids"] and all(Path(g["path"]).exists() for g in man["grids"]),
               f"frames.py writes grids ({man['frames_used']} frames)")
         check({c.get("shot") for g in man["grids"] for c in g["cells"]} >= {0, 1}, "both shots appear in the grids")
+
+        # gray_thumbs feeds frames.py's dedup and index.py's OCR skip; a short count turns both off silently.
+        # Identical stills (a static shot) are the case that broke: the concat input gives them bad timestamps.
+        thumbs = folder / "thumbs"
+        thumbs.mkdir()
+        ffmpeg("-f", "lavfi", "-i", "color=gray:s=480x270", "-frames:v", "6", str(thumbs / "k_%05d.jpg"))
+        sys.path.insert(0, str(SCRIPTS))
+        import common
+        n = len(common.gray_thumbs(sorted(thumbs.glob("*.jpg"))))
+        check(n == 6, f"one thumbnail per image for dedup (got {n} of 6)")
         at = "0.5,2.9,3.1,5.9"
         for name, clip in (("mp4", mp4), ("ts", ts)):
             run("frames.py", str(clip), "--out-dir", str(root / f"at_{name}"), "--at", at, "--no-labels")

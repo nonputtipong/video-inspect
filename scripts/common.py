@@ -321,6 +321,8 @@ def gray_thumbs(paths: list[Path], size: int = 32) -> list[bytes]:
 
     The images are fed through a concat list of bare file names, run from that folder, so
     gaps in numbering and Windows drive letters don't matter. Returns [] if the count is off.
+    Identical stills (a static shot) come out of concat with clashing timestamps, which the
+    default output timing drops, so frames pass straight through instead.
     """
     if not paths:
         return []
@@ -329,7 +331,7 @@ def gray_thumbs(paths: list[Path], size: int = 32) -> list[bytes]:
     listing.write_text("".join(f"file '{p.name}'\n" for p in paths), encoding="utf-8")
     r = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "concat", "-safe", "0",
                         "-i", listing.name, "-vf", f"scale={size}:{size},format=gray",
-                        "-f", "rawvideo", "-"], capture_output=True, cwd=folder)
+                        "-fps_mode", "passthrough", "-f", "rawvideo", "-"], capture_output=True, cwd=folder)
     listing.unlink()
     n = size * size
     if r.returncode or len(r.stdout) != n * len(paths):
