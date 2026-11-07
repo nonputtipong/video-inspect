@@ -2,7 +2,8 @@
 """Pick the frames worth looking at and tile them into timestamped grid images.
 
 Default ("shots"): one frame per shot at its sharpest moment, then extra frames spread
-evenly across the range (denser on short clips) so long takes aren't a single still.
+across the range (denser on short clips, and in high-motion shots: still shots get half
+the base rate, the busiest quarter twice it) so long takes aren't a single still.
 Near-identical neighbours are dropped, except a shot's own frame, and on clips up to
 3 minutes no gap between kept frames grows past --max-gap. The shot list comes from
 index.py (pass --index to reuse one) and the frame budget grows to one frame per shot.
@@ -142,19 +143,36 @@ def spread(items: list, n: int) -> list:
 
 
 def plan_times(shots: list[dict], budget: int, lo: float, hi: float, fill_cap: float) -> list[dict]:
-    """Each shot's sharpest moment, then the rest of the budget as evenly spaced fill
-    (at most fill_cap a second), skipping fill within 0.3 s of a shot's frame."""
+    """Each shot's sharpest moment, then the rest of the budget as fill weighted by motion:
+    a still shot gets half the base rate, a high-motion shot twice it (base at most
+    fill_cap a second). Fill within 0.3 s of a shot's frame is skipped."""
     anchors = spread([{"t": s["sharpest_s"], "anchor": True, "shot": s["index"]} for s in shots], budget)
     marks = sorted(a["t"] for a in anchors)
     plan = list(anchors)
     room = budget - len(anchors)
-    if room > 0 and hi > lo:
-        rate = min(fill_cap, room / (hi - lo))
-        for k in range(int((hi - lo) * rate)):
-            t = lo + (k + 0.5) / rate
-            i = bisect.bisect_left(marks, t)
-            if all(abs(marks[j] - t) >= 0.3 for j in (i - 1, i) if 0 <= j < len(marks)):
-                plan.append({"t": t, "anchor": False})
+    still_below, busy_from = shot_index.motion_bands(shots)
+
+    def weight(s: dict) -> float:
+        m = s.get("motion")
+        if m is None:
+            return 1.0
+        return 0.5 if m < still_below else 2.0 if m >= busy_from > still_below else 1.0
+
+    segs = [(max(lo, s["start_s"]), min(hi, s["end_s"]), weight(s)) for s in shots]
+    segs = [g for g in segs if g[1] > g[0]] or [(lo, hi, 1.0)]
+    total = sum((b - a) * w for a, b, w in segs)   # motion-weighted seconds
+    if room > 0 and total > 0:
+        rate = min(fill_cap, room / total)
+        n, k, u0 = int(total * rate), 0, 0.0
+        for a, b, w in segs:   # evenly spaced on the weighted clock, so busy shots get more
+            u1 = u0 + (b - a) * w
+            while k < n and (k + 0.5) / rate < u1:
+                t = a + ((k + 0.5) / rate - u0) / w
+                k += 1
+                i = bisect.bisect_left(marks, t)
+                if all(abs(marks[j] - t) >= 0.3 for j in (i - 1, i) if 0 <= j < len(marks)):
+                    plan.append({"t": t, "anchor": False})
+            u0 = u1
     return sorted(plan, key=lambda p: p["t"])
 
 

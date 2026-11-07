@@ -27,7 +27,7 @@ Scripts live in `SKILL_DIR/scripts/` (the folder holding this file). Run them wi
 | Check a finished render before posting | `check.py` |
 | Study reference videos (pacing, labels) | `study.py` |
 | Compare renders/stills with reference images | `compare.py` |
-| One moment | `frames.py --start --end --cells 16`, or `--at 4:32,7:10` for exact instants |
+| One moment | `frames.py --start --end --cells 16`, `--force uniform --fps 15` for a close look (see below), or `--at 4:32,7:10` for exact instants |
 
 ### Understand a video
 1. `python3 -I SKILL_DIR/scripts/transcript.py VIDEO --out WORK/transcript.json --lang en`. Start it first, in the background; it's the slow part.
@@ -41,7 +41,15 @@ reason isn't stated. Pictures alone produce confident, plausible, wrong stories.
 
 `--cells`: 64 (default) for plot and scene inventory, 36 for faces and fine action, 16 for small text.
 On clips up to 3 minutes, frames.py keeps at least one frame every 0.5 s (`--max-gap`), so locked-camera
-animation doesn't lose beats. Grids can't show easing or velocity; for animation quality, look at short zoomed ranges or ask the user to watch.
+animation doesn't lose beats. Fill frames follow motion: still shots get half the base rate (up to 4 a second on
+clips up to a minute, 2 up to 5 minutes, then 1), high-motion shots twice it. Grids can't show easing or velocity; for animation quality, look at short zoomed ranges or ask the user to watch.
+
+Close look: the overview grids top out around 8 frames a second, and far less on long videos. When a moment
+needs more (a high-motion shot in `index.md`, a sound hit, a caption change, a glitch from `check.py`), grid
+just that stretch at a fixed rate:
+`frames.py VIDEO --out-dir WORK/zoom --start 1:12 --end 1:16 --force uniform --fps 15 --no-dedup --cells 36`.
+Use `--fps 30` (up to the video's own rate) for frame-by-frame, and keep the range short: the 512-frame budget
+covers about 17 s at 30 fps and thins anything longer. `--at` grabs exact instants instead of a range.
 
 Other `frames.py` options: `--budget N` caps frames for the whole run (default 512, raised to one per shot up to 2048; 0 = no cap), `--max-grids N` caps grids, and both thin frames evenly rather than cutting the end. `--force keyframe` uses the encoder's keyframes and `--force uniform` a fixed rate (`--fps`); on variable-frame-rate screen recordings uniform labels can be a few hundred ms off, so prefer the default. `--no-dedup` keeps near-duplicate frames, `--no-labels` leaves off the time stamps, `--cell-width` sets cell size (default 480 px).
 
