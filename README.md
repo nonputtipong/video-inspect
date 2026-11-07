@@ -68,10 +68,14 @@ python3 -I scripts/compare.py --stills a.png b.png --refs refs/ --out-dir work
 
 See [`SKILL.md`](SKILL.md) for every option and how Claude is told to read the output.
 
-Self-test for the picture checks:
+Self-tests for the picture checks and for how frames.py spreads frames by motion:
 
 ```bash
 uv run --no-project --with numpy python -I scripts/test_check_picture.py
+```
+
+```bash
+python3 -I scripts/test_frames_plan.py
 ```
 
 End-to-end smoke test (every script on a generated clip; set `VI_SMOKE_TRANSCRIPT=1` to include faster-whisper). GitHub Actions runs it on Windows, Linux and macOS with Python 3.9 and 3.13:
@@ -94,6 +98,7 @@ scripts/
   compare.py                  Stills vs reference images: boards and look stats
   ocr.swift                   macOS Vision OCR helper (compiled to bin/ on first use)
   test_check_picture.py       Self-test for check.py's frozen and glitch frame detection
+  test_frames_plan.py         Self-test for frames.py's motion-weighted fill frames
 tests/
   smoke_test.py               End-to-end test of every script (run by GitHub Actions)
   fixtures/text.png           Printed text the smoke test overlays for OCR

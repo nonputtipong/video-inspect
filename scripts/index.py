@@ -272,6 +272,14 @@ def ts(sec: float) -> str:
     return common.clock(int(round(sec * 1000)))
 
 
+def motion_bands(shots: list[dict]) -> tuple[float, float]:
+    """Motion words are relative to this video: the quietest quarter of its shots reads
+    "still", the busiest quarter "high motion", whatever kind of footage it is."""
+    motion = sorted(s["motion"] for s in shots if "motion" in s)
+    quantile = (lambda q: motion[min(len(motion) - 1, int(q * len(motion)))]) if motion else (lambda q: 0.0)
+    return max(0.5, quantile(0.25)), quantile(0.75)
+
+
 def describe(shot: dict, still_below: float, busy_from: float) -> str:
     words = []
     if "motion" in shot:
@@ -333,11 +341,7 @@ def main() -> None:
     hits = [{**h, "t_s": round(h["t_s"] + origin, 2)} for h in sound_hits(m["loud"])]
     silences = [(round(a + origin, 2), round(b + origin, 2)) for a, b in m["silences"]]
 
-    # Motion words are relative to this video: the quietest quarter of its shots reads
-    # "still", the busiest quarter "high motion", whatever kind of footage it is.
-    motion = sorted(s["motion"] for s in shots if "motion" in s)
-    quantile = (lambda q: motion[min(len(motion) - 1, int(q * len(motion)))]) if motion else (lambda q: 0.0)
-    still_below, busy_from = max(0.5, quantile(0.25)), quantile(0.75)
+    still_below, busy_from = motion_bands(shots)
 
     durations = sorted(s["dur_s"] for s in shots)
     index = {

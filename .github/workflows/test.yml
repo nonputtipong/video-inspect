@@ -54,6 +54,9 @@ jobs:
       - name: Self-test (check.py picture scan)
         run: uv run --no-project --python ${{ matrix.python }} --with numpy python -I scripts/test_check_picture.py
 
+      - name: Self-test (frames.py fill planning)
+        run: uv run --no-project --python ${{ matrix.python }} python -I scripts/test_frames_plan.py
+
       - name: Smoke test (every script on a generated clip)
         env:
           # faster-whisper is downloaded once per job; run it on one Python per OS
