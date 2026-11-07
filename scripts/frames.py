@@ -158,7 +158,10 @@ def plan_times(shots: list[dict], budget: int, lo: float, hi: float, fill_cap: f
             return 1.0
         return 0.5 if m < still_below else 2.0 if m >= busy_from > still_below else 1.0
 
-    segs = [(max(lo, s["start_s"]), min(hi, s["end_s"]), weight(s)) for s in shots]
+    weights = [weight(s) for s in shots]
+    if len(set(weights)) <= 1:   # weights are relative: one shot, or all alike, fills evenly at 1x
+        weights = [1.0] * len(shots)
+    segs = [(max(lo, s["start_s"]), min(hi, s["end_s"]), w) for s, w in zip(shots, weights)]
     segs = [g for g in segs if g[1] > g[0]] or [(lo, hi, 1.0)]
     total = sum((b - a) * w for a, b, w in segs)   # motion-weighted seconds
     if room > 0 and total > 0:

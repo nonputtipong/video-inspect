@@ -35,6 +35,11 @@ assert len(plan) <= 100 and high >= 3 * still, (len(plan), still, high)
 ss = shots(30, [3])
 assert 116 <= len(frames.plan_times(ss, 512, 0, 30, 4.0)) <= 121
 
+# One still shot, or every shot equally still: weights are relative, so no halving
+for motions in ([0.1], [0.1, 0.2, 0.1]):
+    n = len(frames.plan_times(shots(30, motions), 512, 0, 30, 4.0))
+    assert 112 <= n <= 121, (motions, n)
+
 # No motion data (shots from an old index): even fill, as before
 ss = [{k: v for k, v in s.items() if k != "motion"} for s in shots(30, [0, 0, 0])]
 counts = fill_per_shot(frames.plan_times(ss, 512, 0, 30, 4.0), ss)
