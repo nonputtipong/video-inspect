@@ -60,6 +60,9 @@ jobs:
       - name: Self-test (audio.py on generated sounds)
         run: uv run --no-project --python ${{ matrix.python }} python -I scripts/test_audio.py
 
+      - name: Self-test (sheet.py mark drawing)
+        run: uv run --no-project --python ${{ matrix.python }} python -I scripts/test_sheet.py
+
       - name: Smoke test (every script on a generated clip)
         env:
           # faster-whisper is downloaded once per job; run it on one Python per OS

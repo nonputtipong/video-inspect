@@ -27,15 +27,16 @@ Scripts live in `SKILL_DIR/scripts/` (the folder holding this file). Run them wi
 | Check a finished render before posting | `check.py` |
 | Study reference videos (pacing, labels) | `study.py` |
 | Compare renders/stills with reference images | `compare.py` |
+| See how sound and picture line up | `sheet.py` after `index.py` |
 | One moment | `frames.py --start --end --cells 16`, `--force uniform --fps 15` for a close look (see below), or `--at 4:32,7:10` for exact instants |
 
 ### Understand a video
 1. `python3 -I SKILL_DIR/scripts/transcript.py VIDEO --out WORK/transcript.json --lang en`. Start it first, in the background; it's the slow part.
-2. `python3 -I SKILL_DIR/scripts/index.py VIDEO --out-dir WORK --ocr [--ocr-lang th] [--ocr-fps 8] [--min-silence 0.3] [--transcript WORK/transcript.json]`. OCR reads 4 frames a second by default; use `--ocr-fps 8` for one-word captions that change faster than that. Read `index.md` whole: one line per shot, sound hits, silences, and on-screen text with its `[zone]` (top/upper/middle/lower/bottom).
+2. `python3 -I SKILL_DIR/scripts/index.py VIDEO --out-dir WORK --ocr [--ocr-lang th] [--ocr-fps 8] [--min-silence 0.3] [--transcript WORK/transcript.json]`. OCR reads 4 frames a second by default; use `--ocr-fps 8` for one-word captions that change faster than that. Read `index.md` whole: one line per shot, on-screen text with its `[zone]` (top/upper/middle/lower/bottom), and the sound timeline (hits, swells and drops, silences, and speech when a transcript is given, in the order they happen).
    - Sound hits are timed to about 5-10 ms, and each shot line says how far its opening cut is from the nearest hit: `cut: hit +78 ms late`, `cut: hit -20 ms early`, or `cut: no hit within 250 ms`. `index.json` has them as `onsets` and `cut_sync`.
-   - "Sound hits" lists every hit with its time and a shape label: `short bright transient (click-like)`, `fast attack, low, ~300 ms (hit/impact-like)`, `slow noisy swell (whoosh-like)`, `ringing tone (ding-like)`, or plain measured words such as `fast attack, bright, tonal, ~140 ms`. The label is the shape of the sound (attack, length, brightness, tone or noise), never what made it: say "a click-like sound", not "a click". Under music, the music is part of what was measured. With `--transcript` (when the transcript is already written), hits inside a spoken word are labelled `speech`.
+   - The sound timeline lists every hit with its time and a shape label: `short bright transient (click-like)`, `fast attack, low, ~300 ms (hit/impact-like)`, `slow noisy swell (whoosh-like)`, `ringing tone (ding-like)`, or plain measured words such as `fast attack, bright, tonal, ~140 ms`. The label is the shape of the sound (attack, length, brightness, tone or noise), never what made it: say "a click-like sound", not "a click". Under music, the music is part of what was measured. With `--transcript` (when the transcript is already written), hits inside a spoken word are labelled `speech`.
    - Music timing: the summary line gives the tempo ("about 120 BPM") and how many cuts fall within 50 ms of a beat, beside the share that would by chance. Shot lines add the cut's distance to the nearest beat (`60 ms after the beat`). "No clear beat" means the rhythm wasn't regular enough to trust; it is not a guess at a tempo. Half and double time read the same, so 87 can be 174. One tempo is found for the whole range, so a video with several songs often reads "no clear beat". `index.json` has `tempo` (with every beat time) and `swells`.
-   - "Swells and drops" lists where short-term loudness moves 6 LU or more over 2 s. An abrupt step shows there too, as a rise over about 3 s.
+   - A `swell` or `drop` in the timeline is short-term loudness moving 6 LU or more over 2 s. An abrupt step shows there too, as a rise over about 3 s.
    - Under dense music a hit can be hidden, and the nearest "hit" can be a note of the music. So `no hit` means none was measured, not that none is there. Look at the frames around it, or ask the user to listen.
 3. `python3 -I SKILL_DIR/scripts/frames.py VIDEO --out-dir WORK --index WORK/index.json`. Read every grid in the manifest in one message. Each cell has its time stamped top-left; cells aren't evenly spaced, so read the stamp.
 4. Read the transcript whole, then answer, citing times.
@@ -57,6 +58,19 @@ Use `--fps 30` (up to the video's own rate) for frame-by-frame, and keep the ran
 covers about 17 s at 30 fps and thins anything longer. `--at` grabs exact instants instead of a range.
 
 Other `frames.py` options: `--budget N` caps frames for the whole run (default 512, raised to one per shot up to 2048; 0 = no cap), `--max-grids N` caps grids, and both thin frames evenly rather than cutting the end. `--force keyframe` uses the encoder's keyframes and `--force uniform` a fixed rate (`--fps`); on variable-frame-rate screen recordings uniform labels can be a few hundred ms off, so prefer the default. `--no-dedup` keeps near-duplicate frames, `--no-labels` leaves off the time stamps, `--cell-width` sets cell size (default 480 px).
+
+### See the sound: audio sheets
+`python3 -I SKILL_DIR/scripts/sheet.py VIDEO --out-dir WORK --index WORK/index.json [--window 30] [--start T --end T]`
+writes `sheet_000.png`, `sheet_001.png`, ... (one per 30 s, 1568 px wide, so about 52 px per second) and `sheets.json`.
+Without `--index` it builds the index itself. Read the sheets like the grids, all in one message. Rows, top to bottom:
+- **time ruler:** a tick every second, MM:SS every 5 s.
+- **shots:** each shot's sharpest frame; its left edge is where the shot starts. Short shots are partly covered by the next one.
+- **three marker lanes:** cuts (red), hits (yellow), beats (cyan, only when the music has a clear beat). Each cut also runs as a red line down through the rows below.
+- **spectrogram:** 40 Hz at the bottom to 16 kHz at the top, brighter = louder. A click is a thin full-height line, a tone a horizontal line, a whoosh a cloud.
+- **waveform**, with a faint yellow line at each hit.
+- **loudness:** green columns from -60 LUFS (empty) to 0 (full); blue background = silence.
+
+Use a sheet to see how things sit together: whether hits fall on cuts, where the music swells, what a silence looks like. One pixel is about 19 ms at the default window, so read exact offsets from `index.md`, not from the picture; for a closer look use `--start`, `--end` and `--window 10`. The image has no words on it: the rows and colours above are the legend (`sheets.json` repeats them).
 
 ### Check a render before posting
 ```bash

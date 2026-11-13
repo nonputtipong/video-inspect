@@ -7,6 +7,7 @@ The scripts do the measuring. Claude does the judging.
 ## What it does
 
 - **Understand a video.** It builds a shot index (cuts, motion, light, silences, sound hits timed to about 5-10 ms with a shape label ("click-like", "whoosh-like") and each cut's offset to its nearest hit, tempo and beats with each cut's distance to the beat, swells and drops), on-screen text with screen positions, timestamped frame grids and a transcript, so Claude can summarize the video and cite times.
+- **See the sound.** Audio sheets put a spectrogram, waveform and loudness strip under the shot thumbnails, with cuts, sound hits and beats marked in different colours, one picture per 30 seconds.
 - **Check a render before posting.** It produces one PASS/FIX report (SKIPPED for checks a missing tool can't run) covering size, fps, duration, loudness (LUFS), loudness range and true peak, clipping, sudden loudness jumps, music too close to the voice, planned sound effects that are buried, silences, black, frozen or glitch frames, shot count, sound hits that land off their cuts (`--sync-tol`), label spelling, text hidden under TikTok/Reels/Shorts buttons, and script vs speech.
 - **Study reference videos.** It measures cuts per minute, median shot length, sound hits and how they sit on the cuts, tempo and cuts on the beat, silence %, words per minute and an on-screen label timeline.
 - **Compare stills with references.** It makes side-by-side boards plus measured brightness, contrast, saturation, warmth, shadows, highlights, fine detail and palette, and flags where a still falls outside the references' range.
@@ -51,6 +52,9 @@ python3 -I scripts/transcript.py clip.mp4 --out work/transcript.json --lang en
 python3 -I scripts/index.py clip.mp4 --out-dir work --ocr
 python3 -I scripts/frames.py clip.mp4 --out-dir work --index work/index.json
 
+# The sound as pictures: spectrogram, waveform, loudness, cuts, hits, beats
+python3 -I scripts/sheet.py clip.mp4 --out-dir work --index work/index.json
+
 # One moment, close up
 python3 -I scripts/frames.py clip.mp4 --out-dir work --at 4:32,7:10 --cells 16
 
@@ -68,7 +72,7 @@ python3 -I scripts/compare.py --stills a.png b.png --refs refs/ --out-dir work
 
 See [`SKILL.md`](SKILL.md) for every option and how Claude is told to read the output.
 
-Self-tests for the picture checks, for how frames.py spreads frames by motion, and for the sound measures:
+Self-tests for the picture checks, for how frames.py spreads frames by motion, for the sound measures and for the sheet marks:
 
 ```bash
 uv run --no-project --with numpy python -I scripts/test_check_picture.py
@@ -80,6 +84,10 @@ python3 -I scripts/test_frames_plan.py
 
 ```bash
 python3 -I scripts/test_audio.py
+```
+
+```bash
+python3 -I scripts/test_sheet.py
 ```
 
 End-to-end smoke test (every script on a generated clip; set `VI_SMOKE_TRANSCRIPT=1` to include faster-whisper). GitHub Actions runs it on Windows, Linux and macOS with Python 3.9 and 3.13:
@@ -98,6 +106,7 @@ scripts/
   audio.py                    Sound measures: hit onsets every 5 ms and their shape labels,
                               hit-to-cut offsets, tempo and beats, swells, mix checks
   frames.py                   Picks the frames worth seeing and tiles them into timestamped grids
+  sheet.py                    Audio sheets: spectrogram, waveform, loudness and marks under the shots
   transcript.py               Local Whisper transcript (paid ElevenLabs only when unlocked)
   check.py                    Pre-posting QA report (PASS/FIX)
   study.py                    Pacing and label stats across reference videos
@@ -106,6 +115,7 @@ scripts/
   test_check_picture.py       Self-test for check.py's frozen and glitch frame detection
   test_frames_plan.py         Self-test for frames.py's motion-weighted fill frames
   test_audio.py               Self-test for audio.py on generated sounds with known answers
+  test_sheet.py               Self-test for where sheet.py draws its marks
 tests/
   smoke_test.py               End-to-end test of every script (run by GitHub Actions)
   fixtures/text.png           Printed text the smoke test overlays for OCR

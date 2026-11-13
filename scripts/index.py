@@ -355,6 +355,9 @@ def main() -> None:
     silences = [(round(a + origin, 2), round(b + origin, 2)) for a, b in m["silences"]]
     # Precise hits and how far each cut is from its nearest one. None (not an empty list)
     # when the audio couldn't be measured, so "no hits" is never claimed without looking.
+    tx = None                                 # transcript, when one is already written
+    if args.transcript and Path(args.transcript).expanduser().exists():
+        tx = json.loads(Path(args.transcript).expanduser().read_text(encoding="utf-8"))
     onsets = cut_sync = sync = cues = tempo = None
     env, env_t = m["env"]
     if env:
@@ -365,11 +368,9 @@ def main() -> None:
         onsets = audio.find_onsets(env, strength)
         audio.measure_shapes(env, m["full"], onsets, m["spectrum"])
         onsets = [{**o, "t_s": round(o["t_s"] + env_t, 3), "label": audio.shape_label(o)} for o in onsets]
-        if args.transcript and Path(args.transcript).expanduser().exists():
-            said = json.loads(Path(args.transcript).expanduser().read_text(encoding="utf-8"))["words"]
-            for o in onsets:
-                if any(w["start_s"] - 0.03 <= o["t_s"] <= w["end_s"] for w in said):
-                    o["label"] = "speech"
+        for o in onsets:
+            if tx and any(w["start_s"] - 0.03 <= o["t_s"] <= w["end_s"] for w in tx["words"]):
+                o["label"] = "speech"
         cut_sync = audio.pair_cuts([s["start_s"] for s in shots[1:]], [o["t_s"] for o in onsets])
         sync = audio.sync_summary(cut_sync)
         tempo = audio.tempo(strength)        # None: no clear beat
@@ -452,27 +453,33 @@ def main() -> None:
     if onscreen:
         md += ["", f"## On-screen text ({backend} OCR)", ""]
         md += [f"- {ts(o['start_s'])}-{ts(o['end_s'])} [{zone(o.get('box'))}] {o['text']}" for o in onscreen]
+    # One list of everything heard, in order: (start, line)
+    heard: list[tuple[float, str]] = [(a, f"- {ts(a)}-{ts(b)} silence ({b - a:.1f}s)") for a, b in silences[:400]]
+    heard += [(w["start_s"], f"- {ts(w['start_s'])}-{ts(w['end_s'])} {w['kind']} {w['change_lu']:+.1f} LU")
+              for w in (swells or [])[:200]]
     if onsets:
-        listed = sorted(sorted(onsets, key=lambda o: -o["rise_db"])[:300], key=lambda o: o["t_s"])
         by_hit = {p["hit_s"]: p for p in cut_sync}
-        md += ["", "## Sound hits", "",
-               "The words describe each hit's shape (attack, brightness, tone or noise, length), not what made "
-               "it: `click-like` is any short bright sound. Under music the music is in the measures too."
-               + (f" Showing the 300 that rise most, of {len(onsets)}." if len(onsets) > 300 else ""), ""]
-        for o in listed:
+        for o in sorted(onsets, key=lambda o: -o["rise_db"])[:300]:
             p = by_hit.get(o["t_s"])
             where = "" if not p else ("; on the cut" if p["offset_ms"] == 0 else
                                       f"; {abs(p['offset_ms'])} ms {'after' if p['offset_ms'] > 0 else 'before'} the cut "
                                       f"at {common.clock_ms(p['cut_s'])}")
-            md.append(f"- {common.clock_ms(o['t_s'])} {o['label']}{where}")
-    if swells:
-        md += ["", "## Swells and drops", "",
-               f"Short-term loudness moving {audio.SWELL_LU:g} LU or more over {audio.SWELL_OVER_S:g} s. "
-               "It averages 3 s, so an abrupt step also shows here as a rise over about 3 s.", ""]
-        md += [f"- {ts(w['start_s'])}-{ts(w['end_s'])} {w['kind']} {w['change_lu']:+.1f} LU" for w in swells[:200]]
-    if silences:
-        md += ["", f"## Silences (>= {args.min_silence}s)", ""]
-        md += [f"- {ts(a)}-{ts(b)} ({b - a:.1f}s)" for a, b in silences[:400]]
+            heard.append((o["t_s"], f"- {common.clock_ms(o['t_s'])} hit: {o['label']}{where}"))
+    if tx:
+        heard += [(g["t_ms"] / 1000, f"- {ts(g['t_ms'] / 1000)}-{ts(g['end_ms'] / 1000)} speech: \"{g['text']}\"")
+                  for g in tx.get("segments", []) if origin <= g["t_ms"] / 1000 < origin + span]
+    if heard:
+        md += ["", "## Sound timeline", "",
+               "Hits, swells and drops, silences" + (", speech" if tx else "") + " in the order they happen. "
+               "A hit's words describe its shape (attack, brightness, tone or noise, length), not what made it: "
+               "`click-like` is any short bright sound, and under music the music is in the measures too. "
+               f"A swell or drop is short-term loudness moving {audio.SWELL_LU:g} LU or more over "
+               f"{audio.SWELL_OVER_S:g} s (an abrupt step shows as a rise over about 3 s). "
+               f"Silence is {args.min_silence}s or more under {common.SILENCE_PAUSE_DB} dB."
+               + (f" Showing the 300 hits that rise most, of {len(onsets)}." if onsets and len(onsets) > 300 else "")
+               + (f" Beats: {len(tempo['beats'])} from {ts(tempo['beats'][0])} to {ts(tempo['beats'][-1])} at about "
+                  f"{tempo['bpm']:g} BPM; every beat time is in index.json (`tempo.beats`)." if tempo else ""), ""]
+        md += [line for _, line in sorted(heard, key=lambda h: h[0])]
     md_path = out / "index.md"
     md_path.write_text("\n".join(md) + "\n", encoding="utf-8")
     print(f"[index] {len(shots)} shots, {len(hits if onsets is None else onsets)} sound hits, {len(silences)} silences"

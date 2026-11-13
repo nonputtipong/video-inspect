@@ -115,6 +115,18 @@ def main() -> None:
         check(len(late_offsets) == 1 and late_offsets[0] is not None and abs(late_offsets[0] - HIT_LATE_MS - 100) <= 15,
               f"sound stream starting 100 ms late: the hit reads {HIT_LATE_MS + 100} ms after the cut (got {late_offsets})")
 
+        # sheet.py: one picture of the sound under the shots, from the same index
+        r = run("sheet.py", str(mp4), "--out-dir", str(root / "sheets"), "--index", str(root / "idx" / "index.json"))
+        sheets = json.loads((root / "sheets" / "sheets.json").read_text(encoding="utf-8")) if r.returncode == 0 else {}
+        size = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "csv=p=0",
+                               sheets["sheets"][0]["path"]] if sheets else ["ffprobe", "-version"],
+                              capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
+        check("SHEETS:" in r.stdout and len(sheets.get("sheets", [])) == 1 and size == "1568,572",
+              f"sheet.py writes one 1568x572 sheet for the 6 s clip (got {size!r})")
+        timeline = (root / "idx" / "index.md").read_text(encoding="utf-8")
+        check("## Sound timeline" in timeline and "hit: short bright transient (click-like); " in timeline,
+              "index.md has the sound timeline with the labelled hit and its cut")
+
         # frames.py: default mode from the index, and exact moments on mp4 vs .ts
         r = run("frames.py", str(mp4), "--out-dir", str(root / "fr"), "--index", str(root / "idx" / "index.json"))
         man = json.loads((root / "fr" / "manifest.json").read_text(encoding="utf-8"))
