@@ -8,6 +8,11 @@ Music timing: tempo by autocorrelating the onset signal over 60-180 BPM, a beat 
 lined up against it block by block, each cut's distance to the nearest beat, and swells and
 drops in short-term loudness.
 
+Reference profile: the same few numbers for every video (cuts per minute, hits on cuts,
+loudness, beat alignment, silence, speaking pace), the middle and spread of them across the
+user's reference videos, and where a render falls against that. Distance from the
+references is a measurement; whether it matters is for the reader to judge.
+
 Mix checks (for check.py): samples at full scale, sudden loudness jumps, how far the bed
 sits under the voice, and planned effects that don't rise out of the bed.
 
@@ -545,3 +550,58 @@ def cue_rises(env: list[float], env_t: float, cues: list[float]) -> list[dict]:
         peak = max(power(after[k:k + 4]) for k in range(len(after) - 3))
         out.append({"cue_s": round(c, 3), "rise_db": round(peak - power(bed), 1)})
     return out
+
+
+# ---------- reference profile ----------
+
+# key, name in reports, how to print a value
+METRICS = (("cuts_per_min", "cuts/min", "{:.0f}"), ("pct_cuts_with_hit", "cuts with a hit", "{:.0f}%"),
+           ("median_hit_offset_ms", "median hit offset", "{:+.0f} ms"), ("lufs", "loudness", "{:.1f} LUFS"),
+           ("lra_lu", "loudness range", "{:.1f} LU"), ("pct_cuts_on_beat", "cuts on the beat", "{:.0f}%"),
+           ("silence_pct", "silence", "{:.0f}%"), ("wpm", "words/min", "{:.0f}"))
+# With fewer references than this the quartiles are nearly one point, so the range a render
+# is held against is lowest-to-highest instead of the middle half.
+QUARTILES_FROM = 5
+
+
+def metrics(idx: dict, words: list[dict] | None = None) -> dict:
+    """One video's profile numbers from its index.json (and transcript words). None = not measured."""
+    span = idx.get("range") or {}
+    dur = ((span.get("end_s") or idx["duration_s"]) - (span.get("start_s") or 0.0)) or 1.0
+    sync, loud, beat = idx.get("sync") or {}, idx.get("loudness") or {}, idx.get("tempo") or {}
+    talk = words[-1]["end_s"] - words[0]["start_s"] if words else 0.0
+    return {"cuts_per_min": round(idx["shot_count"] / dur * 60, 1),
+            "pct_cuts_with_hit": sync.get("pct_with_hit"), "median_hit_offset_ms": sync.get("median_offset_ms"),
+            "lufs": loud.get("integrated_lufs"), "lra_lu": loud.get("lra_lu"),
+            "pct_cuts_on_beat": beat.get("pct_cuts_on_beat"),
+            "silence_pct": round(sum(s["end_s"] - s["start_s"] for s in idx.get("silences", [])) / dur * 100, 1),
+            "wpm": round(len(words) / talk * 60) if talk > 0.1 else None}
+
+
+def make_profile(videos: dict[str, dict]) -> dict:
+    """{"videos": {name: metrics}, "metrics": {key: {median, q1, q3, min, max, n}}} for study.py --profile."""
+    out: dict = {}
+    for key, _, _ in METRICS:
+        vals = sorted(m[key] for m in videos.values() if m.get(key) is not None)
+        if vals:
+            q = statistics.quantiles(vals, n=4, method="inclusive") if len(vals) > 1 else [vals[0]] * 3
+            out[key] = {"median": statistics.median(vals), "q1": q[0], "q3": q[2],
+                        "min": vals[0], "max": vals[-1], "n": len(vals)}
+    return {"videos": videos, "metrics": out}
+
+
+def against_profile(m: dict, profile: dict) -> list[dict]:
+    """Each metric against the references: [{"key", "name", "value", "low", "high", "median", "n",
+    "where"}], where = "inside" | "below" | "above", or None when either side has no number."""
+    rows = []
+    for key, name, fmt in METRICS:
+        ref, value = profile["metrics"].get(key), m.get(key)
+        row = {"key": key, "name": name, "fmt": fmt, "value": value, "where": None}
+        if ref:
+            wide = ref["n"] >= QUARTILES_FROM
+            row.update(low=ref["q1"] if wide else ref["min"], high=ref["q3"] if wide else ref["max"],
+                       median=ref["median"], n=ref["n"])
+            if value is not None:
+                row["where"] = "below" if value < row["low"] else "above" if value > row["high"] else "inside"
+        rows.append(row)
+    return rows

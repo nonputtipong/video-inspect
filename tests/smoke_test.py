@@ -182,10 +182,21 @@ def main() -> None:
               "check.py: overlay zones SKIPPED only without OCR")
 
         # study.py and compare.py
-        r = run("study.py", str(mp4), "--out-dir", str(root / "st"), "--no-transcript")
+        r = run("study.py", str(mp4), "--out-dir", str(root / "st"), "--no-transcript",
+                "--profile", str(root / "profile.json"))
         check(r.returncode == 0 and (root / "st" / "study.md").exists(), "study.py runs")
         check("| 100% | +" in (root / "st" / "study.md").read_text(encoding="utf-8"),
               "study.py: the cut has a hit, and it lands late")
+        # The clip held against a profile of itself: every measure it has falls inside
+        prof = json.loads((root / "profile.json").read_text(encoding="utf-8")) if (root / "profile.json").exists() else {}
+        check(prof.get("metrics", {}).get("pct_cuts_with_hit", {}).get("median") == 100,
+              f"study.py --profile saves the references' numbers ({sorted(prof.get('metrics', {}))})")
+        run("check.py", str(mp4), "--out-dir", str(root / "ck3"), "--expect-size", "640x360", "--expect-fps", "30",
+            "--profile", str(root / "profile.json"))
+        ck3 = json.loads((root / "ck3" / "check.json").read_text(encoding="utf-8")).get("profile", {})
+        check(ck3.get("measured", 0) >= 5 and ck3.get("inside") == ck3.get("measured")
+              and "## Against your references" in (root / "ck3" / "check.md").read_text(encoding="utf-8"),
+              f"check.py --profile: {ck3.get('inside')} of {ck3.get('measured')} measures inside its own profile")
         a, b = root / "a.png", root / "b.png"
         ffmpeg("-ss", "1", "-i", str(mp4), "-frames:v", "1", str(a))
         ffmpeg("-ss", "4", "-i", str(mp4), "-frames:v", "1", str(b))

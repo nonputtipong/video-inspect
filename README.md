@@ -10,6 +10,7 @@ The scripts do the measuring. Claude does the judging.
 - **See the sound.** Audio sheets put a spectrogram, waveform and loudness strip under the shot thumbnails, with cuts, sound hits and beats marked in different colours, one picture per 30 seconds.
 - **Check a render before posting.** It produces one PASS/FIX report (SKIPPED for checks a missing tool can't run) covering size, fps, duration, loudness (LUFS), loudness range and true peak, clipping, sudden loudness jumps, music too close to the voice, planned sound effects that are buried, silences, black, frozen or glitch frames, shot count, sound hits that land off their cuts (`--sync-tol`), label spelling, text hidden under TikTok/Reels/Shorts buttons, and script vs speech.
 - **Study reference videos.** It measures cuts per minute, median shot length, sound hits and how they sit on the cuts, tempo and cuts on the beat, silence %, words per minute and an on-screen label timeline.
+- **Hold a render against your references.** `study.py --profile` saves the middle and spread of your reference videos' numbers; `check.py --profile` shows where a render falls outside them and at which moments. The profile is always your own picks.
 - **Compare stills with references.** It makes side-by-side boards plus measured brightness, contrast, saturation, warmth, shadows, highlights, fine detail and palette, and flags where a still falls outside the references' range.
 
 ## Requirements
@@ -63,8 +64,11 @@ python3 -I scripts/check.py render.mp4 --out-dir work \
   --expect-size 1080x1920 --expect-fps 60 --expect-lufs -14 --max-peak -1 \
   --terms terms.txt --script script.txt
 
-# Study reference videos
-python3 -I scripts/study.py ref1.mp4 ref2.mp4 --out-dir work
+# Study reference videos, and save their profile
+python3 -I scripts/study.py ref1.mp4 ref2.mp4 ref3.mp4 --out-dir work --profile work/profile.json
+
+# Hold a render against that profile
+python3 -I scripts/check.py render.mp4 --out-dir work/check --profile work/profile.json
 
 # Compare renders with reference images
 python3 -I scripts/compare.py --stills a.png b.png --refs refs/ --out-dir work
@@ -104,12 +108,13 @@ scripts/
   common.py                   Shared helpers: fenced temp folders, OCR backends, ffprobe
   index.py                    Shot index: cuts, motion, light, sound hits, silences, OCR text
   audio.py                    Sound measures: hit onsets every 5 ms and their shape labels,
-                              hit-to-cut offsets, tempo and beats, swells, mix checks
+                              hit-to-cut offsets, tempo and beats, swells, mix checks,
+                              reference profile
   frames.py                   Picks the frames worth seeing and tiles them into timestamped grids
   sheet.py                    Audio sheets: spectrogram, waveform, loudness and marks under the shots
   transcript.py               Local Whisper transcript (paid ElevenLabs only when unlocked)
-  check.py                    Pre-posting QA report (PASS/FIX)
-  study.py                    Pacing and label stats across reference videos
+  check.py                    Pre-posting QA report (PASS/FIX), and a render against a profile
+  study.py                    Pacing, sound and label stats across reference videos; saves a profile
   compare.py                  Stills vs reference images: boards and look stats
   ocr.swift                   macOS Vision OCR helper (compiled to bin/ on first use)
   test_check_picture.py       Self-test for check.py's frozen and glitch frame detection

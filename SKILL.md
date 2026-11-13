@@ -26,6 +26,7 @@ Scripts live in `SKILL_DIR/scripts/` (the folder holding this file). Run them wi
 | Understand or summarize a video | `transcript.py` (background) + `index.py --ocr` + `frames.py --index`, then read everything |
 | Check a finished render before posting | `check.py` |
 | Study reference videos (pacing, labels) | `study.py` |
+| Hold a render against the user's reference videos | `study.py --profile p.json`, then `check.py --profile p.json` |
 | Compare renders/stills with reference images | `compare.py` |
 | See how sound and picture line up | `sheet.py` after `index.py` |
 | One moment | `frames.py --start --end --cells 16`, `--force uniform --fps 15` for a close look (see below), or `--at 4:32,7:10` for exact instants |
@@ -77,7 +78,7 @@ Use a sheet to see how things sit together: whether hits fall on cuts, where the
 python3 -I SKILL_DIR/scripts/check.py VIDEO --out-dir WORK \
   [--expect-size 1080x1920 --expect-fps 60 --expect-lufs -14 --max-peak -1 --min-silence 0.3] \
   [--expect-duration 113.5] [--expect-shots 66] [--terms terms.txt] [--script script.txt] \
-  [--cuts cuts.txt] [--sync-tol 40] [--cues cues.txt] [--transcript transcript.json]
+  [--cuts cuts.txt] [--sync-tol 40] [--cues cues.txt] [--transcript transcript.json] [--profile p.json]
 ```
 - `terms.txt`: one expected on-screen term per line (labels, numbers, stamps), with exact spelling.
 - `script.txt`: the spoken words only, with no directions or speaker names.
@@ -99,12 +100,14 @@ Mix checks (sound only, a few seconds):
 - **buried effects (rule of thumb):** with `--cues FILE` (planned effect times in seconds), flags the ones that rise less than 3 dB over the 300 ms before them.
 - The two rules of thumb are named that way in `check.md`. Treat them as places to listen, not as verdicts.
 
+Against references: `--profile p.json` (made by `study.py --profile`) adds an "Against your references" section: cuts per minute, share of cuts with a hit, median hit offset, loudness, loudness range, cuts on the beat, silence % and words per minute, each beside the references' range, and the moments behind a difference (`00:12.400 cut has no sound hit within 250 ms`). The range is the references' lowest to highest, or their middle half once there are 5 or more. It is never a PASS/FIX row: being outside the references is a difference to weigh, not a fault. There is no built-in profile; it is only ever the user's own picks. Words per minute needs a transcript on both sides.
+
 Tolerances: loudness passes within `--lufs-tol` (default 1 LU) of `--expect-lufs`; a picture jump within `--cut-tol` (default 0.05 s) of a cut counts as that cut (planned cuts with `--cuts`, else detected ones). `--transcript FILE` reuses an existing transcript instead of making one, and `--lang` sets the speech and on-screen text language (default en).
 
 Read `check.md`. FIX items need fixing before posting. SKIPPED items couldn't run on this machine (no OCR engine, or no local Whisper for the script check); tell the user they weren't checked rather than calling them passed. Shot counts only see hard cuts, not camera moves inside one shot, so treat a mismatch as something to look into. Overlay-zone hits are text that the app's buttons or caption bar may cover; check the frames at those times. Then build `frames.py` grids around any FIX to confirm it by eye.
 
 ### Study reference videos
-`python3 -I SKILL_DIR/scripts/study.py V1 V2 ... --out-dir WORK` writes a table with cuts per minute, median shot, sound hits per minute, the share of cuts with a sound hit within 250 ms and the median hit offset (+ means hits land after their cuts), BPM and the share of cuts on the beat, silence %, words and words per minute, plus per-video cut times, hit times and the labels in the upper frame. Pair it with `frames.py` grids to see what each cut shows. `--no-transcript` and `--no-ocr` skip the slow parts (words then read 0, wpm `–`, labels "none found"); `--lang` sets the language (default en).
+`python3 -I SKILL_DIR/scripts/study.py V1 V2 ... --out-dir WORK` writes a table with cuts per minute, median shot, sound hits per minute, the share of cuts with a sound hit within 250 ms and the median hit offset (+ means hits land after their cuts), BPM and the share of cuts on the beat, silence %, words and words per minute, plus per-video cut times, hit times and the labels in the upper frame. Pair it with `frames.py` grids to see what each cut shows. `--profile p.json` also saves those numbers per video with their median and spread, for `check.py --profile`; study at least 3 references that share a style, since the profile is only as good as they are alike. `--no-transcript` and `--no-ocr` skip the slow parts (words then read 0, wpm `–`, labels "none found"); `--lang` sets the language (default en).
 
 ### Compare stills with reference images
 `python3 -I SKILL_DIR/scripts/compare.py --stills a.png b.png --refs refs_dir --out-dir WORK`, then read

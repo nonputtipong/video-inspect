@@ -13,12 +13,15 @@ Checks (each optional input switches its check on):
   text      every --terms entry appears on screen (OCR); near-misses flagged as typos
   zones     on-screen text inside app-overlay zones (TikTok/Reels/Shorts buttons and bars)
   script    spoken words vs --script, word by word (local transcript; never paid)
+  profile   with --profile (from study.py --profile): where this video's cuts per minute, hits on
+            cuts, loudness, beat alignment, silence and speaking pace fall against your reference
+            videos, with the moments behind each difference. A report section, not a PASS/FIX row.
 
 Usage:
   python3 check.py VIDEO --out-dir DIR [--expect-size 1080x1920] [--expect-fps 60]
       [--expect-lufs -14] [--max-peak -1] [--min-silence 0.3] [--expect-duration S]
       [--expect-shots N] [--terms terms.txt] [--script script.txt] [--transcript t.json]
-      [--cuts cuts.txt] [--sync-tol MS] [--cues cues.txt]
+      [--cuts cuts.txt] [--sync-tol MS] [--cues cues.txt] [--profile p.json]
 Output: DIR/check.md, DIR/check.json; prints `CHECK: <path>`.
 """
 from __future__ import annotations
@@ -176,6 +179,8 @@ def main() -> None:
                     help="ms: FIX when a cut's nearest sound hit is further from the cut than this")
     ap.add_argument("--cues", help="file with planned sound-effect times in seconds; ones that don't rise "
                                    "out of the sound before them are flagged (rule of thumb)")
+    ap.add_argument("--profile", help="profile JSON from study.py --profile: report where this video falls "
+                                      "against those reference videos")
     ap.add_argument("--terms", help="text file, one expected on-screen term per line")
     ap.add_argument("--script", help="text file with the exact spoken script (plain words)")
     ap.add_argument("--transcript", help="existing transcript.json to use instead of transcribing")
@@ -377,6 +382,33 @@ def main() -> None:
             res.append(("script vs speech", None, "skipped: no transcript (no local Whisper worked offline; "
                                                   "run transcript.py to see why)"))
 
+    # Against the user's own references: a distance, with the moments behind it. Not a verdict.
+    prof_rows, prof_notes, prof = [], [], None
+    if args.profile and idx:
+        profile = json.loads(Path(args.profile).expanduser().read_text(encoding="utf-8"))
+        prof = audio.against_profile(audio.metrics(idx, tx["words"] if tx else None), profile)
+        for r in prof:
+            if "low" in r:
+                show = r["fmt"].format
+                prof_rows.append(f"| {r['name']} | {show(r['value']) if r['value'] is not None else 'not measured'} "
+                                 f"| {show(r['low'])} to {show(r['high'])}, median {show(r['median'])} "
+                                 f"| {r['where'] or '–'} |")
+        where = {r["key"]: r for r in prof if r["where"] in ("below", "above")}
+        pairs = idx.get("cut_sync") or []
+        if where.get("pct_cuts_with_hit", {}).get("where") == "below":
+            prof_notes += [f"- {common.clock_ms(p['cut_s'])} cut has no sound hit within "
+                           f"{audio.SYNC_WINDOW_S * 1000:.0f} ms" for p in pairs if p["offset_ms"] is None]
+        r = where.get("median_hit_offset_ms")
+        if r:
+            prof_notes += [f"- {common.clock_ms(p['cut_s'])} cut: {audio.offset_words(p['offset_ms'])} "
+                           f"(references' median {r['median']:+.0f} ms)" for p in pairs if p["offset_ms"] is not None
+                           and (p["offset_ms"] > r["high"] if r["where"] == "above" else p["offset_ms"] < r["low"])]
+        if where.get("pct_cuts_on_beat", {}).get("where") == "below":
+            prof_notes += [f"- {common.clock_ms(p['cut_s'])} cut is {abs(p['beat_offset_ms'])} ms "
+                           f"{'after' if p['beat_offset_ms'] > 0 else 'before'} the beat" for p in pairs
+                           if p.get("beat_offset_ms") is not None and abs(p["beat_offset_ms"]) > audio.BEAT_TOL_S * 1000]
+        prof_notes.sort()
+
     verdict = "FIX" if any(ok is False for _, ok, _ in res) else "PASS"
     skipped = [n for n, ok, _ in res if ok is None]
     status = {True: "PASS", False: "FIX", None: "SKIPPED"}
@@ -402,6 +434,16 @@ def main() -> None:
         md += ["", "## Music over voice (rule of thumb)", "",
                "Pauses between words where the loudness stays close to the speech level. A sound effect in a "
                "pause reads the same as loud music, so listen before judging.", ""] + voice_rows[:60]
+    if prof is not None:
+        judged = [r for r in prof if r["where"]]
+        md += ["", "## Against your references", "",
+               f"`{args.profile}` ({len(profile['videos'])} videos): {sum(r['where'] == 'inside' for r in judged)} of "
+               f"{len(judged)} measures fall inside the references' range. The range is their lowest to highest "
+               f"(their middle half once there are {audio.QUARTILES_FROM} or more). Outside it is a difference to look "
+               "at, not a fault: the references are a taste, and taste is yours to judge.", "",
+               "| measure | this video | references | |", "|---|---|---|---|"] + prof_rows
+        if prof_notes:
+            md += ["", "Moments behind the differences:", ""] + prof_notes[:60]
     if term_rows:
         md += ["", "## On-screen terms", ""] + term_rows
     if zone_hits:
@@ -414,6 +456,11 @@ def main() -> None:
         {"name": n, "pass": ok, "detail": d, **({"skipped": True} if ok is None else {})} for n, ok, d in res]}
     if skipped:
         report["skipped"] = skipped
+    if prof is not None:
+        report["profile"] = {"file": args.profile, "inside": sum(r["where"] == "inside" for r in prof),
+                             "measured": sum(r["where"] is not None for r in prof),
+                             "metrics": [{k: v for k, v in r.items() if k != "fmt"} for r in prof],
+                             "notes": [n[2:] for n in prof_notes]}
     (out / "check.json").write_text(json.dumps(report, indent=1), encoding="utf-8")
     print(f"CHECK: {(out / 'check.md').resolve()}")
 
