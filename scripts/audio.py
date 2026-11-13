@@ -573,7 +573,7 @@ def metrics(idx: dict, words: list[dict] | None = None) -> dict:
     dur = ((span.get("end_s") or idx["duration_s"]) - (span.get("start_s") or 0.0)) or 1.0
     sync, loud, beat = idx.get("sync") or {}, idx.get("loudness") or {}, idx.get("tempo") or {}
     talk = words[-1]["end_s"] - words[0]["start_s"] if words else 0.0
-    return {"cuts_per_min": round(idx["shot_count"] / dur * 60, 1),
+    return {"cuts_per_min": round(max(0, idx["shot_count"] - 1) / dur * 60, 1),   # one shot is no cut
             "pct_cuts_with_hit": sync.get("pct_with_hit"), "median_hit_offset_ms": sync.get("median_offset_ms"),
             "lufs": loud.get("integrated_lufs"), "lra_lu": loud.get("lra_lu"),
             "pct_cuts_on_beat": beat.get("pct_cuts_on_beat"),

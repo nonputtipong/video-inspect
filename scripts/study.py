@@ -58,8 +58,9 @@ def main() -> None:
                 nwords = len(ws)
                 if ws:
                     wpm = f"{nwords / max(0.1, ws[-1]['end_s'] - ws[0]['start_s']) * 60:.0f}"
-        measured[Path(v).name] = audio.metrics(idx, ws)
-        shots = idx["shot_count"]
+        # by file name, or by full path when two references share a name
+        measured[v if Path(v).name in measured else Path(v).name] = audio.metrics(idx, ws)
+        cuts = max(0, idx["shot_count"] - 1)      # a cut is a boundary between shots: one shot, no cut
         precise = idx.get("onsets") is not None      # 5 ms hit onsets; else the coarse loudness jumps
         hit_times = [e["t_s"] for e in (idx["onsets"] if precise else idx["audio_events"])]
         hits = len(hit_times)
@@ -70,7 +71,7 @@ def main() -> None:
         tempo = idx.get("tempo") or {}
         bpm = f"{tempo['bpm']:g}" if tempo else "–"
         on_beat = "–" if tempo.get("pct_cuts_on_beat") is None else f"{tempo['pct_cuts_on_beat']}%"
-        rows.append(f"| {Path(v).name} | {dur:.1f}s | {shots} | {shots / dur * 60:.0f} | {idx['median_shot_s']}s "
+        rows.append(f"| {Path(v).name} | {dur:.1f}s | {cuts} | {cuts / dur * 60:.0f} | {idx['median_shot_s']}s "
                     f"| {hits / dur * 60:.0f} | {with_hit} | {offset} | {bpm} | {on_beat} "
                     f"| {sil / dur * 100:.0f}% | {nwords} | {wpm} |")
         labels = [o for o in idx.get("onscreen_text", []) if o.get("box") and o["box"][1] + o["box"][3] / 2 < 0.42]
