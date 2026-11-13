@@ -4,7 +4,8 @@ ones, and each cut is paired with the right hit and offset. Then the mix checks:
 stretch, a loudness jump, a bed too close to the voice and a buried effect are each found,
 and their clean twins are not. Then music timing: a 120 BPM click track reads 120 with its
 beats in place, notes at random times read "no clear beat", and swells and drops are found.
-Then shape labels: a click, an impact, a whoosh and a ding each get their own.
+Then shape labels: a click, an impact, a whoosh and a ding each get their own. Last, the
+reference profile: medians and ranges across videos, and where another video falls.
 Usage: python3 -I scripts/test_audio.py   (needs ffmpeg)
 """
 import array
@@ -178,4 +179,27 @@ assert [w["kind"] for w in moves] == ["swell", "drop"], moves
 assert abs(moves[0]["start_s"] - 8) <= 1.5 and moves[0]["change_lu"] >= 6 and moves[1]["change_lu"] <= -6, moves
 assert audio.swells(loudness(lambda t: -20)) == []
 
-print("ok: hit onsets, cut sync, mix checks, music timing and shape labels")
+# Reference profile. Three references: 20, 24 and 30 cuts a minute; one has no beat.
+def index(shots, with_hit, on_beat, lufs):
+    return {"duration_s": 60.0, "shot_count": shots, "silences": [{"start_s": 1.0, "end_s": 4.0}],
+            "sync": {"pct_with_hit": with_hit, "median_offset_ms": -10},
+            "loudness": {"integrated_lufs": lufs, "lra_lu": 5.0},
+            "tempo": None if on_beat is None else {"pct_cuts_on_beat": on_beat}}
+
+
+talk = [{"start_s": 0.0, "end_s": 0.4}, {"start_s": 29.6, "end_s": 30.0}]      # 2 words in 30 s: 4 a minute
+refs = {"a": audio.metrics(index(20, 80, 60, -14.0), talk), "b": audio.metrics(index(24, 90, 70, -15.0)),
+        "c": audio.metrics(index(30, 100, None, -13.0))}
+assert refs["a"] == {"cuts_per_min": 20.0, "pct_cuts_with_hit": 80, "median_hit_offset_ms": -10, "lufs": -14.0,
+                     "lra_lu": 5.0, "pct_cuts_on_beat": 60, "silence_pct": 5.0, "wpm": 4}, refs["a"]
+profile = audio.make_profile(refs)
+cuts = profile["metrics"]["cuts_per_min"]
+assert (cuts["median"], cuts["min"], cuts["max"], cuts["n"]) == (24.0, 20.0, 30.0, 3), cuts
+assert profile["metrics"]["pct_cuts_on_beat"]["n"] == 2 and profile["metrics"]["wpm"]["n"] == 1
+# A render with 38 cuts a minute, half its cuts with a hit, in range on loudness, and no transcript
+judged = {r["key"]: r for r in audio.against_profile(audio.metrics(index(38, 50, 65, -14.5)), profile)}
+assert [judged[k]["where"] for k in ("cuts_per_min", "pct_cuts_with_hit", "lufs", "pct_cuts_on_beat", "wpm")] == [
+    "above", "below", "inside", "inside", None], judged
+assert (judged["cuts_per_min"]["low"], judged["cuts_per_min"]["high"]) == (20.0, 30.0)   # under 5 refs: lowest to highest
+
+print("ok: hit onsets, cut sync, mix checks, music timing, shape labels and reference profile")
