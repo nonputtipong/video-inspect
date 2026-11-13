@@ -16,6 +16,14 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
         python: ["3.9", "3.13"]
+        # setup-python has no Python 3.9 build for Ubuntu 26.04, which ubuntu-latest now is, so the
+        # Linux 3.9 job stays on 24.04. Its apt ffmpeg (6.1) is also the oldest one tested.
+        exclude:
+          - os: ubuntu-latest
+            python: "3.9"
+        include:
+          - os: ubuntu-24.04
+            python: "3.9"
     steps:
       - uses: actions/checkout@v4
 
