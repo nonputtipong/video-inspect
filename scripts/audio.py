@@ -1,5 +1,9 @@
 """Audio measures shared by index.py, check.py and study.py. ffmpeg plus the standard library.
 
+Music timing: tempo by autocorrelating the onset signal over 60-180 BPM, a beat grid
+lined up against it block by block, each cut's distance to the nearest beat, and swells and
+drops in short-term loudness.
+
 Mix checks (for check.py): samples at full scale, sudden loudness jumps, how far the bed
 sits under the voice, and planned effects that don't rise out of the bed.
 
@@ -165,6 +169,126 @@ def offset_words(offset_ms: int | None) -> str:
     if offset_ms is None:
         return f"no hit within {int(SYNC_WINDOW_S * 1000)} ms"
     return f"hit {offset_ms:+d} ms" + (" late" if offset_ms > 0 else " early" if offset_ms < 0 else "")
+
+
+# ---------- music timing ----------
+
+BPM_RANGE = (60, 180)
+# The beat's autocorrelation, as a share of the signal's own energy, must reach this, or the
+# answer is "no clear beat" rather than a guess. Measured on generated signals only (there
+# was no real music to tune on): click tracks from 60 to 174 BPM 0.96-0.99, a kick, snare
+# and pad pattern 0.92, clicks played 20 ms off the grid 0.47; notes at random times (the
+# timing of speech) 0.05-0.11 over four seeds, steady noise 0. A busy mix whose melody
+# outweighed its drums read 0.20 with the wrong tempo, so refusing it is right.
+BEAT_MIN_CORR = 0.3
+# Tempo an octave off (60 for 120) correlates as well as the real one, so each candidate is
+# weighted toward 120 BPM, losing 25% an octave away: a 120 BPM click reads 120, not 60.
+OCTAVE_PENALTY = 0.25
+BEAT_BLOCK_S = 8.0         # the grid's phase is found again for every block, so it follows drift
+BEAT_MIN_SHARE = 0.2       # ... and a block with under this share of its onsets on the grid gets no beats
+BEAT_SNAP_S = 0.025        # a beat moves to the strongest onset this close to its grid point
+BEAT_TOL_S = 0.05          # a cut this close to a beat is on the beat (the handoff's figure)
+
+
+def novelty(strength: list[float]) -> list[float]:
+    """Where the level starts rising: spikes at note starts, flat through held sound. Rises
+    under ATTACK_DB are left out, so the wobble of steady noise isn't read as rhythm."""
+    raw = [0.0] + [max(0.0, b - a) if b >= ATTACK_DB else 0.0 for a, b in zip(strength, strength[1:])]
+    return [0.25 * a + 0.5 * b + 0.25 * c for a, b, c in zip([0.0] + raw, raw, raw[1:] + [0.0])]
+
+
+def tempo(strength: list[float]) -> dict | None:
+    """{"bpm", "corr", "beats": [seconds from the envelope's start]}, or None for no clear beat."""
+    nov = novelty(strength)
+    lo, hi = int(60 / BPM_RANGE[1] / HOP_S), int(60 / BPM_RANGE[0] / HOP_S)
+    # Blurred over 45 ms for the tempo only, so notes played 10-20 ms off the grid still line
+    # up (a click track with 20 ms of jitter correlated 0.20 unblurred), and moved to sit
+    # around zero, so only a repeating pattern correlates and steady noise does not.
+    wide = [sum(nov[max(0, i - 4):i + 5]) for i in range(len(nov))]
+    mean = sum(wide) / len(wide) if wide else 0.0
+    flat = [v - mean for v in wide]
+    energy = sum(v * v for v in flat)
+    if energy <= 0 or len(nov) < 4 * hi:
+        return None
+    corr = {lag: sum(a * b for a, b in zip(flat, flat[lag:])) / energy for lag in range(lo - 1, hi + 2)}
+    best = max(range(lo, hi + 1),
+               key=lambda lag: corr[lag] * (1 - OCTAVE_PENALTY * abs(math.log2(60 / (lag * HOP_S) / 120))))
+    if corr[best] < BEAT_MIN_CORR:
+        return None
+    a, b, c = corr[best - 1], corr[best], corr[best + 1]
+    period = best + (0.5 * (a - c) / (a - 2 * b + c) if a - 2 * b + c else 0.0)   # frames, between-frame peak
+
+    beats: list[float] = []
+    block, snap, bins = int(BEAT_BLOCK_S / HOP_S), int(BEAT_SNAP_S / HOP_S), int(round(period))
+    for start in range(0, len(nov), block):
+        part = nov[start:start + block]
+        fold = [0.0] * bins               # the block's onsets stacked on one beat period
+        for i, v in enumerate(part):
+            if v:
+                fold[int(i % period) % bins] += v * v     # squared: note starts outweigh wobble
+        phase = max(range(bins), key=fold.__getitem__)
+        if sum(fold[(phase + d) % bins] for d in (-1, 0, 1)) < BEAT_MIN_SHARE * (sum(fold) or 1):
+            continue
+        k = 0
+        while phase + k * period < len(part):
+            at = start + int(round(phase + k * period))
+            near = range(max(0, at - snap), min(len(nov), at + snap + 1))
+            at = max(near, key=nov.__getitem__) if any(nov[j] for j in near) else at
+            t = (at + 0.5) * HOP_S
+            if not beats or t - beats[-1] > 0.5 * period * HOP_S:
+                beats.append(round(t, 3))
+            k += 1
+    if not beats:
+        return None
+    return {"bpm": round(60 / (period * HOP_S), 1), "corr": round(corr[best], 2), "beats": beats}
+
+
+def beat_summary(offsets: list[int | None], bpm: float) -> dict:
+    """How many cuts sit on a beat, and how many would by chance (the tolerance's share of a beat)."""
+    on = sum(1 for o in offsets if o is not None and abs(o) <= BEAT_TOL_S * 1000)
+    return {"tol_ms": int(BEAT_TOL_S * 1000), "cuts_on_beat": on,
+            "pct_cuts_on_beat": round(100 * on / len(offsets)) if offsets else None,
+            "chance_pct": round(100 * 2 * BEAT_TOL_S * bpm / 60)}
+
+
+def beat_offsets(cuts: list[float], beats: list[float], bpm: float) -> list[int | None]:
+    """Each cut's distance to the nearest beat in ms (+ after the beat), None where there is no beat."""
+    out: list[int | None] = []
+    for c in cuts:
+        i = bisect.bisect_left(beats, c)
+        near = [b for b in beats[max(0, i - 1):i + 1] if abs(b - c) <= 30 / bpm]   # within half a beat
+        out.append(int(round((c - min(near, key=lambda b: abs(b - c))) * 1000)) if near else None)
+    return out
+
+
+# A swell or drop: short-term loudness moving SWELL_LU over SWELL_OVER_S (the handoff's
+# figures). Short-term loudness averages 3 s, so an abrupt step also shows as a rise over
+# about 3 s; check.py's "loudness jumps" tells the two apart. Below SWELL_FLOOR_LUFS is
+# silence: sound coming back from it counts as a rise from the floor, not from -120.
+SWELL_LU = 6.0
+SWELL_OVER_S = 2.0
+SWELL_FLOOR_LUFS = -50.0
+
+
+def swells(loud: dict) -> list[dict]:
+    """[{"kind": "swell" | "drop", "start_s", "end_s", "change_lu"}] from index.json's "loudness"."""
+    step, t0 = loud["step_s"], loud["start_s"]
+    s = [max(SWELL_FLOOR_LUFS, v) for v in loud["short_term"]]
+    k = int(round(SWELL_OVER_S / step))
+    out: list[dict] = []
+    i = int(round(SHORT_TERM_S / step)) + k
+    while i < len(s):
+        d = s[i] - s[i - k]
+        if abs(d) < SWELL_LU:
+            i += 1
+            continue
+        first = i
+        while i + 1 < len(s) and (s[i + 1] - s[i + 1 - k]) * d > 0 and abs(s[i + 1] - s[i + 1 - k]) >= SWELL_LU:
+            i += 1
+        out.append({"kind": "swell" if d > 0 else "drop", "start_s": round(t0 + (first - k) * step, 1),
+                    "end_s": round(t0 + i * step, 1), "change_lu": round(s[i] - s[first - k], 1)})
+        i += 1
+    return out
 
 
 # ---------- mix checks ----------
