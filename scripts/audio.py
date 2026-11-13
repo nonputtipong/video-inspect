@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import bisect
 import math
-import re
 import statistics
 import subprocess
 from pathlib import Path
@@ -299,6 +298,8 @@ BEAT_MIN_CORR = 0.3
 OCTAVE_PENALTY = 0.25
 BEAT_BLOCK_S = 8.0         # the grid's phase is found again for every block, so it follows drift
 BEAT_MIN_SHARE = 0.2       # ... and a block with under this share of its onsets on the grid gets no beats
+BEAT_MIN_FILL = 0.5        # ... nor one where fewer than this share of its beats have a note on them: one
+                           # sound alone in a block is 100% "on the grid", and drew beats across 8 silent seconds
 BEAT_SNAP_S = 0.025        # a beat moves to the strongest onset this close to its grid point
 BEAT_TOL_S = 0.05          # a cut this close to a beat is on the beat (the handoff's figure)
 
@@ -342,15 +343,16 @@ def tempo(strength: list[float]) -> dict | None:
         phase = max(range(bins), key=fold.__getitem__)
         if sum(fold[(phase + d) % bins] for d in (-1, 0, 1)) < BEAT_MIN_SHARE * (sum(fold) or 1):
             continue
-        k = 0
+        k, found, played = 0, [], 0
         while phase + k * period < len(part):
             at = start + int(round(phase + k * period))
             near = range(max(0, at - snap), min(len(nov), at + snap + 1))
-            at = max(near, key=nov.__getitem__) if any(nov[j] for j in near) else at
-            t = (at + 0.5) * HOP_S
-            if not beats or t - beats[-1] > 0.5 * period * HOP_S:
-                beats.append(round(t, 3))
+            if any(nov[j] for j in near):
+                at, played = max(near, key=nov.__getitem__), played + 1
+            found.append(round((at + 0.5) * HOP_S, 3))
             k += 1
+        if played >= BEAT_MIN_FILL * len(found):
+            beats += [t for t in found if not beats or t - beats[-1] > 0.5 * period * HOP_S]
     if not beats:
         return None
     return {"bpm": round(60 / (period * HOP_S), 1), "corr": round(corr[best], 2), "beats": beats}
@@ -548,7 +550,8 @@ def cue_rises(env: list[float], env_t: float, cues: list[float]) -> list[dict]:
             out.append({"cue_s": round(c, 3), "rise_db": None})
             continue
         peak = max(power(after[k:k + 4]) for k in range(len(after) - 3))
-        out.append({"cue_s": round(c, 3), "rise_db": round(peak - power(bed), 1)})
+        # out of silence the rise is counted from ONSET_FLOOR_DB, not from -120
+        out.append({"cue_s": round(c, 3), "rise_db": round(max(peak, ONSET_FLOOR_DB) - max(power(bed), ONSET_FLOOR_DB), 1)})
     return out
 
 

@@ -106,6 +106,15 @@ def main() -> None:
         check(len(ts_offsets) == 1 and ts_offsets[0] is not None and abs(ts_offsets[0] - HIT_LATE_MS) <= 15,
               f".ts range: the hit is still {HIT_LATE_MS} ms after the cut (got {ts_offsets})")
 
+        # One second of digital silence: its loudness reads -inf, and the series must keep its place in time
+        gap = folder / "gap.mp4"
+        ffmpeg("-i", str(mp4), "-c:v", "copy", "-af", "volume=0:enable='between(t,1,2)'", "-c:a", "aac", str(gap))
+        run("index.py", str(gap), "--out-dir", str(root / "idx_gap"), "--min-silence", "0.5")
+        gap_idx = json.loads((root / "idx_gap" / "index.json").read_text(encoding="utf-8"))
+        series = gap_idx["loudness"]["momentary"]
+        check(len(series) in (60, 61) and series[15] < -60 and series[45] > -60 and len(gap_idx["silences"]) == 1,
+              f"loudness series keeps its timing through a silent second ({len(series)} values for 6 s)")
+
         # A file whose sound starts 100 ms after its picture: hits must stay on the picture's clock
         late = folder / "late.mkv"
         ffmpeg("-i", str(mp4), "-itsoffset", "0.1", "-i", str(mp4), "-map", "0:v", "-map", "1:a", "-c", "copy", str(late))
