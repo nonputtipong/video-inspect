@@ -4,6 +4,7 @@ ones, and each cut is paired with the right hit and offset. Then the mix checks:
 stretch, a loudness jump, a bed too close to the voice and a buried effect are each found,
 and their clean twins are not. Then music timing: a 120 BPM click track reads 120 with its
 beats in place, notes at random times read "no clear beat", and swells and drops are found.
+Then shape labels: a click, an impact, a whoosh and a ding each get their own.
 Usage: python3 -I scripts/test_audio.py   (needs ffmpeg)
 """
 import array
@@ -121,6 +122,22 @@ try:
         t += rng.uniform(0.12, 0.9)
     save(talk, tmp / "talk.wav")
     assert audio.tempo(audio.rise(audio.envelope(str(tmp / "talk.wav"), tmp))) is None
+
+    # Shape labels: four sounds two seconds apart, each shaped like its name
+    shapes = [0.0] * (9 * SR)
+    add(shapes, 1.0, noise(0.004, 0.5))                                             # click
+    crack = [v * math.exp(-k / SR / 0.025) for k, v in enumerate(noise(0.5, 0.25))]
+    add(shapes, 3.0, [a + b for a, b in zip(tone(0.5, 70, 0.7, 0.11), crack)])        # impact: low body, short crack
+    swell = noise(0.8, 0.4)
+    add(shapes, 5.0, [v * math.sin(math.pi * k / len(swell)) ** 2 for k, v in enumerate(swell)])   # whoosh
+    add(shapes, 7.0, [a + b for a, b in zip(tone(1.5, 1500, 0.4, 0.25), tone(1.5, 4050, 0.15, 0.25))])   # ding
+    save(shapes, tmp / "shapes.wav")
+    env = audio.envelope(str(tmp / "shapes.wav"), tmp)
+    hits = audio.find_onsets(env)
+    audio.measure_shapes(env, audio.read_env(tmp, "full.txt")[0], hits, audio.read_spectrum(tmp))
+    labels = [audio.shape_label(h) for h in hits]
+    assert len(labels) == 4 and all(word in label for word, label in zip(
+        ("click-like", "impact-like", "whoosh-like", "ding-like"), labels)), list(zip(hits, labels))
 finally:
     common.safe_rmtree(tmp)
 
@@ -161,4 +178,4 @@ assert [w["kind"] for w in moves] == ["swell", "drop"], moves
 assert abs(moves[0]["start_s"] - 8) <= 1.5 and moves[0]["change_lu"] >= 6 and moves[1]["change_lu"] <= -6, moves
 assert audio.swells(loudness(lambda t: -20)) == []
 
-print("ok: hit onsets, cut sync, mix checks and music timing")
+print("ok: hit onsets, cut sync, mix checks, music timing and shape labels")

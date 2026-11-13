@@ -12,14 +12,15 @@ How it measures (ffmpeg only, Python stdlib):
           also get brightness, motion and sharpness.
   audio   momentary and short-term loudness every 100 ms, and silence spans (in parallel).
   hits    level of every 5 ms of high-passed audio; a hit is where it rises out of its
-          background (audio.py). Each cut is paired with the nearest hit within 250 ms.
+          background (audio.py). Each cut is paired with the nearest hit within 250 ms, and
+          each hit gets its attack, length, brightness and tonality, and a shape label.
   music   tempo and a beat grid from the same 5 ms levels, each cut's distance to the nearest
           beat, and swells and drops in short-term loudness.
   text    (--ocr) frames at a few per second, read only when the picture changed.
 
 Usage:
   python3 index.py VIDEO --out-dir DIR [--start T] [--end T] [--ocr] [--ocr-lang th]
-                         [--ocr-fps 8] [--min-silence 0.3] [--cues cues.txt]
+                         [--ocr-fps 8] [--min-silence 0.3] [--cues cues.txt] [--transcript t.json]
 
 Writes DIR/index.json and DIR/index.md; prints `INDEX: <path to index.md>` last.
 """
@@ -116,7 +117,8 @@ def measure(video: str, start: float | None, end: float | None, with_audio: bool
             began = None
     return {"scene": read_metadata(tmp / "scene.txt"), "stats": read_metadata(tmp / "stats.txt"),
             "loud": read_metadata(tmp / "loud.txt") if with_audio else [], "silences": silences,
-            "env": audio.read_env(tmp)}   # (levels, first frame's time)
+            "env": audio.read_env(tmp),   # (levels, first frame's time)
+            "full": audio.read_env(tmp, "full.txt")[0], "spectrum": audio.read_spectrum(tmp)}
 
 
 def find_cuts(scene: list[dict]) -> list[float]:
@@ -317,6 +319,8 @@ def main() -> None:
                     help="Shortest silence to report, in seconds (0.3 for a tight-paced short).")
     ap.add_argument("--ocr-lang", default="en",
                     help="On-screen text languages: th, en, zh, ja, ko ... (default en).")
+    ap.add_argument("--transcript", help="transcript.json from transcript.py: hits that fall inside a spoken "
+                                         "word are labelled speech.")
     ap.add_argument("--cues", help="File of planned sound-effect times in seconds: index.json gets how far "
                                    "each rises over the sound before it (check.py --cues reads that).")
     args = ap.parse_args()
@@ -358,7 +362,14 @@ def main() -> None:
         if args.cues:
             cues = audio.cue_rises(env, env_t, common.read_times(args.cues))
         strength = audio.rise(env)
-        onsets = [{**o, "t_s": round(o["t_s"] + env_t, 3)} for o in audio.find_onsets(env, strength)]
+        onsets = audio.find_onsets(env, strength)
+        audio.measure_shapes(env, m["full"], onsets, m["spectrum"])
+        onsets = [{**o, "t_s": round(o["t_s"] + env_t, 3), "label": audio.shape_label(o)} for o in onsets]
+        if args.transcript and Path(args.transcript).expanduser().exists():
+            said = json.loads(Path(args.transcript).expanduser().read_text(encoding="utf-8"))["words"]
+            for o in onsets:
+                if any(w["start_s"] - 0.03 <= o["t_s"] <= w["end_s"] for w in said):
+                    o["label"] = "speech"
         cut_sync = audio.pair_cuts([s["start_s"] for s in shots[1:]], [o["t_s"] for o in onsets])
         sync = audio.sync_summary(cut_sync)
         tempo = audio.tempo(strength)        # None: no clear beat
@@ -425,7 +436,6 @@ def main() -> None:
     elif onsets is not None:
         md[2] += " No clear beat."
     hit_t = [h["t_s"] for h in hits] if onsets is None else [o["t_s"] for o in onsets]
-    stamp = ts if onsets is None else common.clock_ms
     at_cut = {p["cut_s"]: p for p in cut_sync or []}
     for s in shots:
         inside = hit_t[bisect.bisect_left(hit_t, s["start_s"]):bisect.bisect_left(hit_t, s["end_s"])]
@@ -433,15 +443,28 @@ def main() -> None:
         beat = at_cut.get(s["start_s"], {}).get("beat_offset_ms")
         if beat is not None:
             extra += ", on the beat" if abs(beat) < 10 else f", {abs(beat)} ms {'after' if beat > 0 else 'before'} the beat"
-        if len(inside) > 12:
-            extra += f"; {len(inside)} hits"
+        if inside and onsets is not None:
+            extra += f"; {len(inside)} hit{'s' * (len(inside) != 1)}"
         elif inside:
-            extra += "; " + ", ".join(f"sound hit {stamp(t)}" for t in inside)
+            extra += "; " + ", ".join(f"sound hit {ts(t)}" for t in inside)
         md.append(f"#{s['index']} {ts(s['start_s'])}-{ts(s['end_s'])} ({s['dur_s']:.1f}s) | "
                   f"{describe(s, still_below, busy_from)}{extra}")
     if onscreen:
         md += ["", f"## On-screen text ({backend} OCR)", ""]
         md += [f"- {ts(o['start_s'])}-{ts(o['end_s'])} [{zone(o.get('box'))}] {o['text']}" for o in onscreen]
+    if onsets:
+        listed = sorted(sorted(onsets, key=lambda o: -o["rise_db"])[:300], key=lambda o: o["t_s"])
+        by_hit = {p["hit_s"]: p for p in cut_sync}
+        md += ["", "## Sound hits", "",
+               "The words describe each hit's shape (attack, brightness, tone or noise, length), not what made "
+               "it: `click-like` is any short bright sound. Under music the music is in the measures too."
+               + (f" Showing the 300 that rise most, of {len(onsets)}." if len(onsets) > 300 else ""), ""]
+        for o in listed:
+            p = by_hit.get(o["t_s"])
+            where = "" if not p else ("; on the cut" if p["offset_ms"] == 0 else
+                                      f"; {abs(p['offset_ms'])} ms {'after' if p['offset_ms'] > 0 else 'before'} the cut "
+                                      f"at {common.clock_ms(p['cut_s'])}")
+            md.append(f"- {common.clock_ms(o['t_s'])} {o['label']}{where}")
     if swells:
         md += ["", "## Swells and drops", "",
                f"Short-term loudness moving {audio.SWELL_LU:g} LU or more over {audio.SWELL_OVER_S:g} s. "

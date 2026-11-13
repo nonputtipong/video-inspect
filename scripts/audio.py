@@ -1,5 +1,9 @@
 """Audio measures shared by index.py, check.py and study.py. ffmpeg plus the standard library.
 
+Shape labels: each hit's attack time, length, brightness and tonality, put into words such
+as "short bright transient (click-like)". They say what a sound is shaped like, never what
+it is.
+
 Music timing: tempo by autocorrelating the onset signal over 60-180 BPM, a beat grid
 lined up against it block by block, each cut's distance to the nearest beat, and swells and
 drops in short-term loudness.
@@ -47,20 +51,30 @@ ATTACK_BACK_S = 0.2      # ... but no further back than this (a slow swell has n
 ONSET_GAP_S = 0.08       # closest two onsets can be: 16th notes at 180 BPM are 83 ms apart
 SYNC_WINDOW_S = 0.25     # a cut is paired with the nearest hit within this (the handoff's figure)
 
-ENV_FILTERS = (f"aresample={RATE},highpass=f={HIGHPASS_HZ},highpass=f={HIGHPASS_HZ},asetnsamples=n={int(RATE * HOP_S)},"
-               "astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level,"
-               "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=onset.txt")
+LEVELS = (f"asetnsamples=n={int(RATE * HOP_S)},"
+          "astats=metadata=1:reset=1:measure_perchannel=none:measure_overall=RMS_level,"
+          "ametadata=print:key=lavfi.astats.Overall.RMS_level:file=")
+# Spectrum of the unfiltered sound in mono, one 21 ms window every 10.7 ms: the centroid says
+# how bright it is and the flatness whether it is a tone (near 0) or noise (near 1).
+SPEC_FILTERS = ("aformat=channel_layouts=mono,aspectralstats=win_size=1024,"
+                "ametadata=print:key=lavfi.aspectralstats.1.centroid:file=centroid.txt,"
+                "ametadata=print:key=lavfi.aspectralstats.1.flatness:file=flatness.txt")
 
 
 def hit_cmd(video: str, seek: list[str], cut: tuple) -> list[str]:
-    """The ffmpeg pass behind the onsets. Run it with cwd=tmp; it writes tmp/onset.txt."""
-    return ["ffmpeg", "-hide_banner", "-loglevel", "error", *seek, "-i", video, "-vn",
-            "-af", common.trim(cut, audio=True) + ENV_FILTERS, "-f", "null", "-"]
+    """The ffmpeg pass behind the onsets and their shapes. Run it with cwd=tmp. It writes
+    onset.txt (5 ms levels above 150 Hz), full.txt (5 ms levels with the bass in),
+    centroid.txt and flatness.txt there."""
+    graph = (f"[0:a]{common.trim(cut, audio=True)}aresample={RATE},asplit=3[hp][full][spec];"
+             f"[hp]highpass=f={HIGHPASS_HZ},highpass=f={HIGHPASS_HZ},{LEVELS}onset.txt[a];"
+             f"[full]{LEVELS}full.txt[b];[spec]{SPEC_FILTERS}[c]")
+    return ["ffmpeg", "-hide_banner", "-loglevel", "error", *seek, "-i", video, "-filter_complex", graph,
+            "-map", "[a]", "-f", "null", "-", "-map", "[b]", "-f", "null", "-", "-map", "[c]", "-f", "null", "-"]
 
 
-def read_env(tmp: Path) -> tuple[list[float], float]:
+def read_env(tmp: Path, name: str = "onset.txt") -> tuple[list[float], float]:
     """(level in dB of each 5 ms frame in order, the first frame's time on the pass's clock)."""
-    path = tmp / "onset.txt"
+    path = tmp / name
     if not path.exists():
         return [], 0.0
     out, first = [], None
@@ -73,6 +87,24 @@ def read_env(tmp: Path) -> tuple[list[float], float]:
         elif first is None and "pts_time:" in line:
             first = float(line.split("pts_time:", 1)[1].split()[0])
     return out, first or 0.0
+
+
+def read_spectrum(tmp: Path) -> list[tuple[float, float, float]]:
+    """[(seconds from the envelope's first frame to the window's centre, centroid Hz, flatness 0-1)]."""
+    def column(name: str) -> list[tuple[float, float]]:
+        path, rows, t = tmp / name, [], 0.0
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if path.exists() else []:
+            if "pts_time:" in line:
+                t = float(line.split("pts_time:", 1)[1].split()[0])
+            elif line.startswith("lavfi."):
+                try:
+                    rows.append((t, float(line.partition("=")[2])))
+                except ValueError:
+                    rows.append((t, 0.0))
+        return rows
+    cen, flat = column("centroid.txt"), column("flatness.txt")
+    first = cen[0][0] if cen else 0.0
+    return [(t - first, c, f) for (t, c), (_, f) in zip(cen, flat)]
 
 
 def envelope(video: str, tmp: Path) -> list[float]:
@@ -143,6 +175,82 @@ def find_onsets(env: list[float], strength: list[float] | None = None) -> list[d
                      "level_db": round(max(env[i:i + 20]), 1)})
         last = j
     return hits
+
+
+SHAPE_MAX_S = 2.0          # a sound still going after this is "sustained": its length isn't followed further
+
+
+def measure_shapes(env: list[float], full: list[float], onsets: list[dict], spectrum: list[tuple]) -> None:
+    """Add each hit's shape to its dict. Times are still from the envelope's start here.
+      attack_ms    start to within 6 dB of its peak (levels above 150 Hz, where attacks are sharp)
+      dur_ms       start until the full-band level has died away 20 dB, or is back within 3 dB
+                   of what played before, or the next hit starts (at most SHAPE_MAX_S)
+      bass_db      how much louder it is with its bass in than above 150 Hz, at its peak
+      centroid_hz, flatness   over its first 0.3 s, louder moments counting more
+    """
+    spec_t = [row[0] for row in spectrum]
+    for n, o in enumerate(onsets):
+        j = int(o["t_s"] / HOP_S)
+        end = min(len(full), j + int(SHAPE_MAX_S / HOP_S), int(onsets[n + 1]["t_s"] / HOP_S) if n + 1 < len(onsets) else len(full))
+        head = env[j:min(end, j + 60)]
+        o["attack_ms"] = next(k for k, v in enumerate(head) if v >= max(head) - 6) * int(HOP_S * 1000)
+        o["dur_ms"] = o["bass_db"] = o["centroid_hz"] = o["flatness"] = None
+        body = full[j:min(end, j + 60)]
+        if not body:
+            continue
+        top = max(body)
+        before = max(statistics.median(full[max(0, j - 80):j]) if j else FLOOR_DB, ONSET_FLOOR_DB)
+        low = max(top - 20, before + 3)
+        stop = next((k for k in range(j + body.index(top), end) if full[k] < low), end)
+        o["dur_ms"] = (stop - j) * int(HOP_S * 1000)
+        o["bass_db"] = round(top - max(head), 1)
+        rows = spectrum[bisect.bisect_left(spec_t, j * HOP_S):bisect.bisect_right(
+            spec_t, j * HOP_S + min(max(o["dur_ms"] / 1000, 0.02), 0.3))]
+        weight = [10 ** ((full[min(len(full) - 1, int(r[0] / HOP_S))] - top) / 10) for r in rows]
+        if rows and sum(weight) > 0:
+            o["centroid_hz"] = int(sum(w * r[1] for w, r in zip(weight, rows)) / sum(weight))
+            o["flatness"] = round(sum(w * r[2] for w, r in zip(weight, rows)) / sum(weight), 3)
+
+
+# Shape rules. They describe a sound's envelope and spectrum, not what made it: "click-like"
+# is a short bright sound, whether a click, a tick or a rimshot. Set on generated sounds
+# (noise clicks and claps, impacts and a kick with a 50-120 Hz body, noise whooshes and a
+# riser, decaying tones and a beep), which each get their own label, and checked on the 14
+# macOS system sounds: Tink, Pop and Purr read click-like, Bottle, Glass and Submarine
+# ding-like, and the rest get the plain measured words (Basso: "fast attack, bright, tonal,
+# ~140 ms"). ffmpeg's centroid weighs every frequency bin alike, so a little noise pulls it
+# up: an impact with a 70 Hz body read 5.8 kHz. That is why "low" also looks at bass_db.
+SHORT_MS = 60              # as long as a click, tick or clap
+FAST_ATTACK_MS = 40        # at its level within this: struck, not swelled
+SLOW_ATTACK_MS = 100       # takes at least this long to arrive: a swell
+RING_MS = 250              # a tone that lasts this long rings
+HIT_MS = (80, 800)         # how long an impact's body lasts
+LOW_HZ = 1000              # centroid under this: the weight is in the bass and low mids
+BASS_DB = 6.0              # ... or this much louder with its bass in: three quarters of it is under 150 Hz
+BRIGHT_HZ = 1500           # centroid over this: bright
+TONAL = 0.25               # flatness under this: mostly a tone
+NOISY = 0.40               # flatness over this: mostly noise
+
+
+def shape_label(o: dict) -> str:
+    """Words for a hit's measured shape. Under music the bed is in the measures too."""
+    a, d, c, f = o["attack_ms"], o["dur_ms"], o["centroid_hz"], o["flatness"]
+    if d is None or c is None:
+        return "fast attack" if a <= FAST_ATTACK_MS else "slow attack"
+    low = c < LOW_HZ or o["bass_db"] >= BASS_DB
+    if a >= SLOW_ATTACK_MS and f >= NOISY:
+        return "slow noisy swell (whoosh-like)"
+    if d <= SHORT_MS and c >= BRIGHT_HZ:
+        return "short bright transient (click-like)"
+    if a <= FAST_ATTACK_MS and f < TONAL and d >= RING_MS and not low:
+        return "ringing tone (ding-like)"
+    if a <= FAST_ATTACK_MS and low and HIT_MS[0] <= d <= HIT_MS[1]:
+        return f"fast attack, low, ~{d} ms (hit/impact-like)"
+    return ", ".join([
+        "fast attack" if a <= FAST_ATTACK_MS else "slow attack" if a >= SLOW_ATTACK_MS else "medium attack",
+        "low" if low else "bright" if c >= BRIGHT_HZ else "mid",
+        "tonal" if f < TONAL else "noisy" if f >= NOISY else "part tone part noise",
+        f"{d / 1000:g} s or more" if d >= SHAPE_MAX_S * 1000 else f"~{d} ms"])
 
 
 def pair_cuts(cuts: list[float], hit_times: list[float], window: float = SYNC_WINDOW_S) -> list[dict]:
