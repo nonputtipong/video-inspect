@@ -1,5 +1,8 @@
 """Audio measures shared by index.py, check.py and study.py. ffmpeg plus the standard library.
 
+Mix checks (for check.py): samples at full scale, sudden loudness jumps, how far the bed
+sits under the voice, and planned effects that don't rise out of the bed.
+
 Hit onsets: ffmpeg writes the RMS level of every 5 ms of high-passed audio (`hit_cmd`), and
 Python finds where that level rises out of its recent background, then walks back to the
 start of the attack. Each cut is then paired with its nearest hit.
@@ -10,6 +13,8 @@ the music is too small), and a cut's nearest "hit" can be one of the music's own
 from __future__ import annotations
 
 import bisect
+import math
+import re
 import statistics
 import subprocess
 from pathlib import Path
@@ -160,3 +165,151 @@ def offset_words(offset_ms: int | None) -> str:
     if offset_ms is None:
         return f"no hit within {int(SYNC_WINDOW_S * 1000)} ms"
     return f"hit {offset_ms:+d} ms" + (" late" if offset_ms > 0 else " early" if offset_ms < 0 else "")
+
+
+# ---------- mix checks ----------
+
+# Clipping is measured as time pinned near full scale, not as samples exactly at it: AAC
+# and MP3 smooth a clipped wave's flat tops, so after encoding almost none of it is exactly
+# at full scale (1000 clipped stretches in a PCM tone left 0-15 such samples after AAC, and
+# ffmpeg's astats flat factor read 0). What survives is how much of the wave sits within
+# 0.5 dB of full scale. Measured on a four-tone mix, noise and a sine, as PCM, AAC 128k/192k
+# and MP3: clipped by about 1 dB 2-15% of samples, by 3 dB 6-33%, by 6 dB 14-52%; the same
+# mix unclipped and peaking at -0.1 dBFS 0.07-0.16%. A codec can lift a peak by about 0.5 dB,
+# so a steady tone at -1 dBFS read clipped at its abrupt start after AAC; one at -3 dBFS never.
+# A CLIP_WIN_S window is clipped at CLIP_SHARE or more. A mix limited with no headroom at
+# all (or a full-scale test tone, 21%) reads the same, and the true-peak check fails it too.
+CLIP_WIN_S = 0.05
+CLIP_SHARE = 0.01
+_NEAR_FULL = bytes(1 if 0x79 <= b <= 0x86 else 0 for b in range(256))   # 16-bit high bytes within 0.5 dB of full scale
+
+
+def clipping(video: str) -> dict:
+    """{"seconds": total clipped time, "spans": [[start_s, end_s]]} for the first audio stream."""
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                        "stream=sample_rate,channels", "-of", "csv=p=0", video],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
+    rate, ch = (int(x) for x in r.stdout.split()[0].split(",")[:2])
+    win = int(rate * CLIP_WIN_S)
+    p = subprocess.Popen(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", video, "-map", "0:a:0",
+                          "-f", "s16le", "-"], stdout=subprocess.PIPE)
+    clipped: set[int] = set()        # window numbers
+    base = 0
+    while True:
+        chunk = p.stdout.read(2 * ch * win * 64)
+        if len(chunk) < 2 * ch:
+            break
+        for c in range(ch):
+            near = chunk[2 * c + 1::2 * ch].translate(_NEAR_FULL)   # this channel's high bytes
+            if near.count(1):
+                clipped.update(base + k // win for k in range(0, len(near), win)
+                               if near.count(1, k, k + win) >= CLIP_SHARE * win)
+        base += 64
+    p.wait()
+    spans: list[list[float]] = []
+    for w in sorted(clipped):
+        if spans and abs(spans[-1][1] - w * CLIP_WIN_S) < 1e-6:
+            spans[-1][1] = round((w + 1) * CLIP_WIN_S, 2)
+        else:
+            spans.append([round(w * CLIP_WIN_S, 2), round((w + 1) * CLIP_WIN_S, 2)])
+    return {"seconds": round(len(clipped) * CLIP_WIN_S, 2), "spans": spans}
+
+
+# A sudden jump: short-term loudness (a 3 s average) up JUMP_LU within JUMP_OVER_S. Because
+# of the averaging that is a step of about 10 dB that stays for a second: on a generated
+# 12 dB step the short-term value crossed +6 LU 0.6 s after it, and a 6 dB step never did.
+# The moment is then read from momentary loudness, which was right to 0.1 s.
+JUMP_LU = 6.0
+JUMP_OVER_S = 1.0
+JUMP_QUIET_LUFS = -40.0    # sound starting from near silence is a start, not a jump
+JUMP_CUT_S = 0.5           # a jump this close to a cut is a scene change
+SHORT_TERM_S = 3.0         # short-term loudness isn't full until this far in, so nothing is judged before it
+
+
+def loud_jumps(loud: dict, cuts: list[float]) -> list[dict]:
+    """Jumps away from cuts: [{"t_s", "rise_lu"}]. `loud` is index.json's "loudness"."""
+    step, t0, m, s = loud["step_s"], loud["start_s"], loud["momentary"], loud["short_term"]
+    k = int(round(JUMP_OVER_S / step))
+    out = []
+    i = int(round(SHORT_TERM_S / step)) + k
+    while i < len(s):
+        before = s[i - k]
+        if before < JUMP_QUIET_LUFS or s[i] - before < JUMP_LU:
+            i += 1
+            continue
+        j = next((u for u in range(max(0, i - k - 5), i + 1) if m[u] >= before + JUMP_LU), i - k)
+        rise = s[i] - before
+        while i + 1 < len(s) and s[i + 1] - s[i + 1 - k] >= JUMP_LU:   # still the same jump
+            i += 1
+            rise = max(rise, s[i] - s[i - k])
+        t = t0 + j * step
+        if not any(abs(t - c) <= JUMP_CUT_S for c in cuts):
+            out.append({"t_s": round(t, 1), "rise_lu": round(rise, 1)})
+        i += 1
+    return out
+
+
+# Rule of thumb, not a measurement of intelligibility: momentary loudness in the pauses
+# between words stands in for the bed under the voice. A bed within VOICE_BED_LU of the
+# speech level is probably too loud (the handoff's figure; common mix advice is 6-12 LU).
+# Pauses longer than PAUSE_MAX_S are left out: music is often brought up where nobody talks.
+VOICE_BED_LU = 6.0
+PAUSE_MIN_S = 0.6          # shortest pause a 400 ms loudness window fits inside
+PAUSE_MAX_S = 3.0
+RUN_GAP_S = 0.3            # words closer than this are one run of speech
+
+
+def voice_vs_bed(loud: dict, words: list[dict]) -> dict | None:
+    """Speech level, bed level in the pauses, and the pauses where the bed comes within
+    VOICE_BED_LU of the voice. None when there are no words or no pause of a usable length."""
+    step, t0, m = loud["step_s"], loud["start_s"], loud["momentary"]
+
+    def levels(a: float, b: float) -> list[float]:
+        """Momentary values whose 400 ms window lies inside a..b (a frame at t covers t-0.3..t+0.1)."""
+        lo, hi = math.ceil((a + 0.3 - t0) / step), math.floor((b - 0.1 - t0) / step)
+        return [m[i] for i in range(max(0, lo), min(len(m) - 1, hi) + 1)]
+
+    speech: list[float] = []
+    pauses = []
+    run_start = words[0]["start_s"] if words else 0.0
+    for w, nxt in zip(words, words[1:] + [None]):
+        gap = nxt["start_s"] - w["end_s"] if nxt else RUN_GAP_S
+        if gap < RUN_GAP_S:
+            continue
+        speech += levels(run_start, w["end_s"])
+        if nxt:
+            run_start = nxt["start_s"]
+            got = levels(w["end_s"], nxt["start_s"]) if PAUSE_MIN_S <= gap <= PAUSE_MAX_S else []
+            if got:
+                pauses.append((w["end_s"], nxt["start_s"], statistics.median(got)))
+    if not speech or not pauses:
+        return None
+    voice = statistics.median(speech)
+    return {"voice_lufs": round(voice, 1), "bed_lufs": round(statistics.median(p[2] for p in pauses), 1),
+            "margin_lu": round(voice - statistics.median(p[2] for p in pauses), 1), "pauses": len(pauses),
+            "close": [{"start_s": round(a, 2), "end_s": round(b, 2), "margin_lu": round(voice - lv, 1)}
+                      for a, b, lv in pauses if voice - lv < VOICE_BED_LU]}
+
+
+# Rule of thumb: a planned effect should stand out of what was playing just before it. Its
+# level is the loudest 20 ms from 50 ms before the cue to 150 ms after, the bed the 300 ms
+# before that, both above 150 Hz. With nothing at the cue steady noise still reads about
+# +1 dB and a busy bed more, so under BURIED_DB the effect is buried or missing.
+BURIED_DB = 3.0
+
+
+def cue_rises(env: list[float], env_t: float, cues: list[float]) -> list[dict]:
+    """[{"cue_s", "rise_db"}]: how far each planned effect rises over the bed (None off the ends)."""
+    def power(part: list[float]) -> float:
+        return 10 * math.log10(sum(10 ** (x / 10) for x in part) / len(part))
+
+    out = []
+    for c in cues:
+        i = int(round((c - env_t) / HOP_S))
+        bed, after = env[max(0, i - 70):max(0, i - 10)], env[max(0, i - 10):max(0, i + 30)]
+        if not bed or len(after) < 4:
+            out.append({"cue_s": round(c, 3), "rise_db": None})
+            continue
+        peak = max(power(after[k:k + 4]) for k in range(len(after) - 3))
+        out.append({"cue_s": round(c, 3), "rise_db": round(peak - power(bed), 1)})
+    return out

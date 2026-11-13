@@ -10,14 +10,14 @@ How it measures (ffmpeg only, Python stdlib):
   video   every frame scaled to 160px wide gets a scene-change score, because a cut
           is one frame wide and sampling would step over it. Four samples a second
           also get brightness, motion and sharpness.
-  audio   momentary loudness every 100 ms, and silence spans (in parallel).
+  audio   momentary and short-term loudness every 100 ms, and silence spans (in parallel).
   hits    level of every 5 ms of high-passed audio; a hit is where it rises out of its
           background (audio.py). Each cut is paired with the nearest hit within 250 ms.
   text    (--ocr) frames at a few per second, read only when the picture changed.
 
 Usage:
   python3 index.py VIDEO --out-dir DIR [--start T] [--end T] [--ocr] [--ocr-lang th]
-                         [--ocr-fps 8] [--min-silence 0.3]
+                         [--ocr-fps 8] [--min-silence 0.3] [--cues cues.txt]
 
 Writes DIR/index.json and DIR/index.md; prints `INDEX: <path to index.md>` last.
 """
@@ -95,8 +95,8 @@ def measure(video: str, start: float | None, end: float | None, with_audio: bool
     if with_audio:
         jobs.append(["ffmpeg", "-hide_banner", "-loglevel", "info", *seek,
                      "-i", video, "-vn", "-af",
-                     f"{common.trim(cut, audio=True)}silencedetect=noise=-35dB:d={min_silence},ebur128=metadata=1,"
-                     "ametadata=print:key=lavfi.r128.M:file=loud.txt", "-f", "null", "-"])
+                     f"{common.trim(cut, audio=True)}silencedetect=noise={common.SILENCE_PAUSE_DB}dB:d={min_silence},ebur128=metadata=1,"
+                     "ametadata=print:file=loud.txt", "-f", "null", "-"])
         jobs.append(audio.hit_cmd(video, seek, cut))
     procs = [subprocess.Popen(cmd, cwd=tmp, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                               text=True, encoding="utf-8", errors="replace") for cmd in jobs]
@@ -315,6 +315,8 @@ def main() -> None:
                     help="Shortest silence to report, in seconds (0.3 for a tight-paced short).")
     ap.add_argument("--ocr-lang", default="en",
                     help="On-screen text languages: th, en, zh, ja, ko ... (default en).")
+    ap.add_argument("--cues", help="File of planned sound-effect times in seconds: index.json gets how far "
+                                   "each rises over the sound before it (check.py --cues reads that).")
     args = ap.parse_args()
     common.need("ffmpeg")
     common.need("ffprobe")
@@ -347,15 +349,27 @@ def main() -> None:
     silences = [(round(a + origin, 2), round(b + origin, 2)) for a, b in m["silences"]]
     # Precise hits and how far each cut is from its nearest one. None (not an empty list)
     # when the audio couldn't be measured, so "no hits" is never claimed without looking.
-    onsets = cut_sync = sync = None
+    onsets = cut_sync = sync = cues = None
     env, env_t = m["env"]
     if env:
         env_t = origin + audio.env_start(video, start is not None, m["scene"][0]["t"] if m["scene"] else 0.0, env_t)
+        if args.cues:
+            cues = audio.cue_rises(env, env_t, common.read_times(args.cues))
         onsets = [{**o, "t_s": round(o["t_s"] + env_t, 3)} for o in audio.find_onsets(env)]
         cut_sync = audio.pair_cuts([s["start_s"] for s in shots[1:]], [o["t_s"] for o in onsets])
         sync = audio.sync_summary(cut_sync)
     elif meta["has_audio"]:
         print("[index] hit timing skipped: the 5 ms level pass gave nothing", file=sys.stderr)
+
+    # The loudness series, for check.py's mix checks: a value at t covers the audio up to t + 0.1 s
+    loud = [r for r in m["loud"] if "r128.M" in r and "r128.S" in r]
+    loudness = None
+    if loud:
+        loudness = {"integrated_lufs": round(loud[-1].get("r128.I", -70.0), 1),
+                    "lra_lu": round(loud[-1].get("r128.LRA", 0.0), 1),
+                    "start_s": round(loud[0]["t"] + origin, 3), "step_s": 0.1,
+                    "momentary": [round(r["r128.M"], 1) for r in loud],
+                    "short_term": [round(r["r128.S"], 1) for r in loud]}
 
     still_below, busy_from = motion_bands(shots)
 
@@ -368,7 +382,7 @@ def main() -> None:
         "median_shot_s": round(durations[len(durations) // 2], 2) if durations else 0,
         "silence_s": round(sum(b - a for a, b in silences), 1),
         "shots": shots, "audio_events": hits,
-        "onsets": onsets, "cut_sync": cut_sync, "sync": sync,
+        "onsets": onsets, "cut_sync": cut_sync, "sync": sync, "cues": cues, "loudness": loudness,
         "silences": [{"start_s": a, "end_s": b} for a, b in silences],
         "ocr_backend": backend,
         "onscreen_text": onscreen,

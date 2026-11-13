@@ -60,7 +60,7 @@ Other `frames.py` options: `--budget N` caps frames for the whole run (default 5
 python3 -I SKILL_DIR/scripts/check.py VIDEO --out-dir WORK \
   [--expect-size 1080x1920 --expect-fps 60 --expect-lufs -14 --max-peak -1 --min-silence 0.3] \
   [--expect-duration 113.5] [--expect-shots 66] [--terms terms.txt] [--script script.txt] \
-  [--cuts cuts.txt] [--sync-tol 40]
+  [--cuts cuts.txt] [--sync-tol 40] [--cues cues.txt] [--transcript transcript.json]
 ```
 - `terms.txt`: one expected on-screen term per line (labels, numbers, stamps), with exact spelling.
 - `script.txt`: the spoken words only, with no directions or speaker names.
@@ -73,6 +73,14 @@ Picture checks run on every frame, with the caption band (`--mask-band 0.46-0.56
 - Self-check: `uv run --no-project --with numpy python -I SKILL_DIR/scripts/test_check_picture.py`.
 
 Sound sync: `check.md` lists each cut's nearest sound hit and its offset in ms (+ late, - early) under "Cut sync". With `--sync-tol MS` it becomes a check: FIX when a hit is further than that from its cut. Offsets are measured against `--cuts` when given, else the detected cuts. A cut with no hit within 250 ms is listed but never a FIX, because dense music can hide a hit.
+
+Mix checks (sound only, a few seconds):
+- **clipping:** time the waveform is pinned at full scale (1% or more of the samples in a 50 ms window within 0.5 dB of it). It works on AAC and MP3 too, where a clipped wave no longer sits exactly at full scale. A mix limited with no headroom reads the same; light clipping of a few peaks can be missed.
+- **loudness range (LRA):** reported beside the loudness, in LU. No pass or fail: a low number means even loudness, a high one big swings.
+- **loudness jumps:** short-term loudness rising 6 LU within a second (about a 10 dB step that stays), with no cut within 0.5 s. Not judged in the first 4 s.
+- **music over voice (rule of thumb):** needs word times, so it runs only with `--transcript` or `--script`, and is SKIPPED otherwise. It compares the loudness in the pauses between words (0.6 to 3 s long) with the speech; under 6 LU apart, the bed is probably too loud. A sound effect in a pause reads the same as loud music.
+- **buried effects (rule of thumb):** with `--cues FILE` (planned effect times in seconds), flags the ones that rise less than 3 dB over the 300 ms before them.
+- The two rules of thumb are named that way in `check.md`. Treat them as places to listen, not as verdicts.
 
 Tolerances: loudness passes within `--lufs-tol` (default 1 LU) of `--expect-lufs`; a picture jump within `--cut-tol` (default 0.05 s) of a cut counts as that cut (planned cuts with `--cuts`, else detected ones). `--transcript FILE` reuses an existing transcript instead of making one, and `--lang` sets the speech and on-screen text language (default en).
 
@@ -92,6 +100,7 @@ Read `check.md`. FIX items need fixing before posting. SKIPPED items couldn't ru
 - No continuous motion (easing, bounce). Cut times are accurate to about one frame (17 ms at 60 fps), sound hits to about 5-10 ms on a clean sound.
 - Sound hits are found by level, above 150 Hz. A hit less than about 9 dB over the music under it, or a sound that is all sub-bass, is missed.
 - OCR reads printed and stylized text well, but tiny or heavily outlined text can be missed. Off macOS it uses Tesseract, which finds roughly half the words Vision does and some junk; `index.md` names the engine, so weigh its text accordingly. `check.py` reports "missing", so confirm in a grid before calling a term absent.
+- "Silence" means two things: `index.md` lists pauses below -35 dB (pacing), `check.py` fails only dead air below -45 dB.
 - Nothing inaudible and off-screen is in any output.
 
 Clean up `WORK` when the user is unlikely to follow up.

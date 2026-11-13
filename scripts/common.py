@@ -31,6 +31,14 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 
+# Two silence thresholds, on purpose. index.py lists pauses, for pacing: a gap between
+# lines still has room tone or a faint bed under it, around -40 dB, and should count.
+# check.py fails a render for its gaps, so it counts only dead air (a missing clip, a gap in
+# the export), which room tone must not set off. Both keep the values they always had.
+SILENCE_PAUSE_DB = -35
+SILENCE_DEAD_DB = -45
+
+
 def need(tool: str) -> None:
     if shutil.which(tool) is None:
         sys.exit(f"{tool} not found on PATH. Install ffmpeg (brew install ffmpeg).")
@@ -90,6 +98,11 @@ def parse_time(text: str | None) -> float | None:
     for p in parts:
         total = total * 60 + p
     return total
+
+
+def read_times(path: str) -> list[float]:
+    """Every number in a text file, as seconds (planned cut or effect times)."""
+    return [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", Path(path).expanduser().read_text(encoding="utf-8"))]
 
 
 def probe(video: str) -> dict:
