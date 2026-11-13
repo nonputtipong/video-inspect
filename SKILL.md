@@ -32,6 +32,8 @@ Scripts live in `SKILL_DIR/scripts/` (the folder holding this file). Run them wi
 ### Understand a video
 1. `python3 -I SKILL_DIR/scripts/transcript.py VIDEO --out WORK/transcript.json --lang en`. Start it first, in the background; it's the slow part.
 2. `python3 -I SKILL_DIR/scripts/index.py VIDEO --out-dir WORK --ocr [--ocr-lang th] [--ocr-fps 8] [--min-silence 0.3]`. OCR reads 4 frames a second by default; use `--ocr-fps 8` for one-word captions that change faster than that. Read `index.md` whole: one line per shot, sound hits, silences, and on-screen text with its `[zone]` (top/upper/middle/lower/bottom).
+   - Sound hits are timed to about 5-10 ms (`sound hit 00:03.078`), and each shot line says how far its opening cut is from the nearest hit: `cut: hit +78 ms late`, `cut: hit -20 ms early`, or `cut: no hit within 250 ms`. `index.json` has them as `onsets` and `cut_sync`.
+   - Under dense music a hit can be hidden, and the nearest "hit" can be a note of the music. So `no hit` means none was measured, not that none is there. Look at the frames around it, or ask the user to listen.
 3. `python3 -I SKILL_DIR/scripts/frames.py VIDEO --out-dir WORK --index WORK/index.json`. Read every grid in the manifest in one message. Each cell has its time stamped top-left; cells aren't evenly spaced, so read the stamp.
 4. Read the transcript whole, then answer, citing times.
 
@@ -57,7 +59,8 @@ Other `frames.py` options: `--budget N` caps frames for the whole run (default 5
 ```bash
 python3 -I SKILL_DIR/scripts/check.py VIDEO --out-dir WORK \
   [--expect-size 1080x1920 --expect-fps 60 --expect-lufs -14 --max-peak -1 --min-silence 0.3] \
-  [--expect-duration 113.5] [--expect-shots 66] [--terms terms.txt] [--script script.txt]
+  [--expect-duration 113.5] [--expect-shots 66] [--terms terms.txt] [--script script.txt] \
+  [--cuts cuts.txt] [--sync-tol 40]
 ```
 - `terms.txt`: one expected on-screen term per line (labels, numbers, stamps), with exact spelling.
 - `script.txt`: the spoken words only, with no directions or speaker names.
@@ -69,12 +72,14 @@ Picture checks run on every frame, with the caption band (`--mask-band 0.46-0.56
 - A 6-frame strip is saved under `WORK/strips/` for every FIX moment, plus a per-shot luma and saturation table.
 - Self-check: `uv run --no-project --with numpy python -I SKILL_DIR/scripts/test_check_picture.py`.
 
+Sound sync: `check.md` lists each cut's nearest sound hit and its offset in ms (+ late, - early) under "Cut sync". With `--sync-tol MS` it becomes a check: FIX when a hit is further than that from its cut. Offsets are measured against `--cuts` when given, else the detected cuts. A cut with no hit within 250 ms is listed but never a FIX, because dense music can hide a hit.
+
 Tolerances: loudness passes within `--lufs-tol` (default 1 LU) of `--expect-lufs`; a picture jump within `--cut-tol` (default 0.05 s) of a cut counts as that cut (planned cuts with `--cuts`, else detected ones). `--transcript FILE` reuses an existing transcript instead of making one, and `--lang` sets the speech and on-screen text language (default en).
 
 Read `check.md`. FIX items need fixing before posting. SKIPPED items couldn't run on this machine (no OCR engine, or no local Whisper for the script check); tell the user they weren't checked rather than calling them passed. Shot counts only see hard cuts, not camera moves inside one shot, so treat a mismatch as something to look into. Overlay-zone hits are text that the app's buttons or caption bar may cover; check the frames at those times. Then build `frames.py` grids around any FIX to confirm it by eye.
 
 ### Study reference videos
-`python3 -I SKILL_DIR/scripts/study.py V1 V2 ... --out-dir WORK` writes a table with cuts per minute, median shot, sound hits per minute, silence %, words and words per minute, plus per-video cut times, hit times and the labels in the upper frame. Pair it with `frames.py` grids to see what each cut shows. `--no-transcript` and `--no-ocr` skip the slow parts (words then read 0, wpm `–`, labels "none found"); `--lang` sets the language (default en).
+`python3 -I SKILL_DIR/scripts/study.py V1 V2 ... --out-dir WORK` writes a table with cuts per minute, median shot, sound hits per minute, the share of cuts with a sound hit within 250 ms and the median hit offset (+ means hits land after their cuts), silence %, words and words per minute, plus per-video cut times, hit times and the labels in the upper frame. Pair it with `frames.py` grids to see what each cut shows. `--no-transcript` and `--no-ocr` skip the slow parts (words then read 0, wpm `–`, labels "none found"); `--lang` sets the language (default en).
 
 ### Compare stills with reference images
 `python3 -I SKILL_DIR/scripts/compare.py --stills a.png b.png --refs refs_dir --out-dir WORK`, then read
@@ -84,7 +89,8 @@ Read `check.md`. FIX items need fixing before posting. SKIPPED items couldn't ru
 - Write the gaps as specific, fixable notes.
 
 ## Limits
-- No continuous motion (easing, bounce), and no frame-exact cut times.
+- No continuous motion (easing, bounce). Cut times are accurate to about one frame (17 ms at 60 fps), sound hits to about 5-10 ms on a clean sound.
+- Sound hits are found by level, above 150 Hz. A hit less than about 9 dB over the music under it, or a sound that is all sub-bass, is missed.
 - OCR reads printed and stylized text well, but tiny or heavily outlined text can be missed. Off macOS it uses Tesseract, which finds roughly half the words Vision does and some junk; `index.md` names the engine, so weigh its text accordingly. `check.py` reports "missing", so confirm in a grid before calling a term absent.
 - Nothing inaudible and off-screen is in any output.
 

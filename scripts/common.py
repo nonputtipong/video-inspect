@@ -70,6 +70,12 @@ def clock(ms: int) -> str:
     return (f"{h}:" if h else "") + f"{m:02d}:{sec:02d}.{rest // 100}"
 
 
+def clock_ms(sec: float) -> str:
+    """MM:SS.mmm, for hit and cut times: tenths are too coarse to compare a hit with a cut."""
+    m, s = divmod(max(0.0, sec), 60)
+    return f"{int(m):02d}:{s:06.3f}"
+
+
 def parse_time(text: str | None) -> float | None:
     """SS, MM:SS or HH:MM:SS (seconds may have decimals) -> seconds."""
     if text is None or not str(text).strip():
