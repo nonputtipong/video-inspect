@@ -194,6 +194,8 @@ def main() -> None:
         r = run("study.py", str(mp4), "--out-dir", str(root / "st"), "--no-transcript",
                 "--profile", str(root / "profile.json"))
         check(r.returncode == 0 and (root / "st" / "study.md").exists(), "study.py runs")
+        check("| 6.0s | 1 | 10 |" in (root / "st" / "study.md").read_text(encoding="utf-8"),
+              "study.py: one cut in 6 s is 10 cuts a minute (two shots are one cut)")
         check("| 100% | +" in (root / "st" / "study.md").read_text(encoding="utf-8"),
               "study.py: the cut has a hit, and it lands late")
         # The clip held against a profile of itself: every measure it has falls inside

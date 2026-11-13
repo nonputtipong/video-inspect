@@ -180,8 +180,8 @@ assert abs(moves[0]["start_s"] - 8) <= 1.5 and moves[0]["change_lu"] >= 6 and mo
 assert audio.swells(loudness(lambda t: -20)) == []
 
 # Reference profile. Three references: 20, 24 and 30 cuts a minute; one has no beat.
-def index(shots, with_hit, on_beat, lufs):
-    return {"duration_s": 60.0, "shot_count": shots, "silences": [{"start_s": 1.0, "end_s": 4.0}],
+def index(cuts, with_hit, on_beat, lufs):
+    return {"duration_s": 60.0, "shot_count": cuts + 1, "silences": [{"start_s": 1.0, "end_s": 4.0}],
             "sync": {"pct_with_hit": with_hit, "median_offset_ms": -10},
             "loudness": {"integrated_lufs": lufs, "lra_lu": 5.0},
             "tempo": None if on_beat is None else {"pct_cuts_on_beat": on_beat}}
@@ -201,5 +201,7 @@ judged = {r["key"]: r for r in audio.against_profile(audio.metrics(index(38, 50,
 assert [judged[k]["where"] for k in ("cuts_per_min", "pct_cuts_with_hit", "lufs", "pct_cuts_on_beat", "wpm")] == [
     "above", "below", "inside", "inside", None], judged
 assert (judged["cuts_per_min"]["low"], judged["cuts_per_min"]["high"]) == (20.0, 30.0)   # under 5 refs: lowest to highest
+
+assert audio.metrics({"duration_s": 60.0, "shot_count": 1})["cuts_per_min"] == 0     # one shot is no cut
 
 print("ok: hit onsets, cut sync, mix checks, music timing, shape labels and reference profile")
