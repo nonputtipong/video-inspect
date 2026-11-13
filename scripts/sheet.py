@@ -29,7 +29,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import subprocess
 import sys
 from pathlib import Path
 
@@ -98,7 +97,8 @@ def draw_marks(idx: dict, start: float, window: float, labels: Path | None = Non
             box(at(a), y0 + 1, at(b) - at(a), tall - 1, SILENT)
     if loud:
         for x in range(WIDTH):
-            i = int((start + (x + 0.5) * window / WIDTH - loud["start_s"]) / loud["step_s"])
+            # a loudness value stamped t covers the 400 ms up to t + 0.1 s: draw it where that ends
+            i = int((start + (x + 0.5) * window / WIDTH - 0.1 - loud["start_s"]) / loud["step_s"])
             if 0 <= i < len(loud["momentary"]):
                 h = int(min(1.0, max(0.0, 1 - loud["momentary"][i] / LOUD_FLOOR)) * (tall - 1))
                 box(x, y0 + tall - h, 1, h, LOUD)

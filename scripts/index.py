@@ -384,15 +384,17 @@ def main() -> None:
     elif meta["has_audio"]:
         print("[index] hit timing skipped: the 5 ms level pass gave nothing", file=sys.stderr)
 
-    # The loudness series, for check.py's mix checks: a value at t covers the audio up to t + 0.1 s
-    loud = [r for r in m["loud"] if "r128.M" in r and "r128.S" in r]
+    # The loudness series, for check.py's mix checks: a value at t covers the audio up to t + 0.1 s.
+    # Digital silence reads -inf, which read_metadata leaves out: it is put back as the floor,
+    # or every value after a silent stretch would slide earlier in time.
+    loud = m["loud"]
     loudness = None
     if loud:
         loudness = {"integrated_lufs": round(loud[-1].get("r128.I", -70.0), 1),
                     "lra_lu": round(loud[-1].get("r128.LRA", 0.0), 1),
                     "start_s": round(loud[0]["t"] + origin, 3), "step_s": 0.1,
-                    "momentary": [round(r["r128.M"], 1) for r in loud],
-                    "short_term": [round(r["r128.S"], 1) for r in loud]}
+                    "momentary": [round(r.get("r128.M", audio.FLOOR_DB), 1) for r in loud],
+                    "short_term": [round(r.get("r128.S", audio.FLOOR_DB), 1) for r in loud]}
 
     swells = audio.swells(loudness) if loudness else None
 
