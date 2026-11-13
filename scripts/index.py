@@ -11,6 +11,8 @@ How it measures (ffmpeg only, Python stdlib):
           is one frame wide and sampling would step over it. Four samples a second
           also get brightness, motion and sharpness.
   audio   momentary loudness every 100 ms, and silence spans (in parallel).
+  hits    level of every 5 ms of high-passed audio; a hit is where it rises out of its
+          background (audio.py). Each cut is paired with the nearest hit within 250 ms.
   text    (--ocr) frames at a few per second, read only when the picture changed.
 
 Usage:
@@ -33,6 +35,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import audio  # noqa: E402
 import common  # noqa: E402
 
 # A scene score at or above HARD_CUT is a cut. Between SOFT_CUT and HARD_CUT it is a cut
@@ -76,7 +79,7 @@ def read_metadata(path: Path) -> list[dict]:
 
 def measure(video: str, start: float | None, end: float | None, with_audio: bool,
             tmp: Path, min_silence: float = 0.6) -> dict:
-    """Run the video and audio passes side by side. Returns scene, stats, loud, silences.
+    """Run the video and audio passes side by side. Returns scene, stats, loud, silences, env.
 
     ffmpeg runs inside `tmp` and writes its logs under bare file names: a full Windows
     path (C:\\...) inside a filter option would be misread as more filter syntax."""
@@ -94,6 +97,7 @@ def measure(video: str, start: float | None, end: float | None, with_audio: bool
                      "-i", video, "-vn", "-af",
                      f"{common.trim(cut, audio=True)}silencedetect=noise=-35dB:d={min_silence},ebur128=metadata=1,"
                      "ametadata=print:key=lavfi.r128.M:file=loud.txt", "-f", "null", "-"])
+        jobs.append(audio.hit_cmd(video, seek, cut))
     procs = [subprocess.Popen(cmd, cwd=tmp, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                               text=True, encoding="utf-8", errors="replace") for cmd in jobs]
     logs = [p.communicate()[1] or "" for p in procs]
@@ -109,7 +113,8 @@ def measure(video: str, start: float | None, end: float | None, with_audio: bool
             silences.append((began, float(value)))
             began = None
     return {"scene": read_metadata(tmp / "scene.txt"), "stats": read_metadata(tmp / "stats.txt"),
-            "loud": read_metadata(tmp / "loud.txt") if with_audio else [], "silences": silences}
+            "loud": read_metadata(tmp / "loud.txt") if with_audio else [], "silences": silences,
+            "env": audio.read_env(tmp)}   # (levels, first frame's time)
 
 
 def find_cuts(scene: list[dict]) -> list[float]:
@@ -340,6 +345,17 @@ def main() -> None:
     shots = shift(make_shots(find_cuts(m["scene"]), span, m["stats"], m["loud"]), origin)
     hits = [{**h, "t_s": round(h["t_s"] + origin, 2)} for h in sound_hits(m["loud"])]
     silences = [(round(a + origin, 2), round(b + origin, 2)) for a, b in m["silences"]]
+    # Precise hits and how far each cut is from its nearest one. None (not an empty list)
+    # when the audio couldn't be measured, so "no hits" is never claimed without looking.
+    onsets = cut_sync = sync = None
+    env, env_t = m["env"]
+    if env:
+        env_t = origin + audio.env_start(video, start is not None, m["scene"][0]["t"] if m["scene"] else 0.0, env_t)
+        onsets = [{**o, "t_s": round(o["t_s"] + env_t, 3)} for o in audio.find_onsets(env)]
+        cut_sync = audio.pair_cuts([s["start_s"] for s in shots[1:]], [o["t_s"] for o in onsets])
+        sync = audio.sync_summary(cut_sync)
+    elif meta["has_audio"]:
+        print("[index] hit timing skipped: the 5 ms level pass gave nothing", file=sys.stderr)
 
     still_below, busy_from = motion_bands(shots)
 
@@ -352,6 +368,7 @@ def main() -> None:
         "median_shot_s": round(durations[len(durations) // 2], 2) if durations else 0,
         "silence_s": round(sum(b - a for a, b in silences), 1),
         "shots": shots, "audio_events": hits,
+        "onsets": onsets, "cut_sync": cut_sync, "sync": sync,
         "silences": [{"start_s": a, "end_s": b} for a, b in silences],
         "ocr_backend": backend,
         "onscreen_text": onscreen,
@@ -365,10 +382,23 @@ def main() -> None:
           f"{'audio' if meta['has_audio'] else 'NO audio'}, {index['silence_s']}s silent.", "",
           "Shot lines: `#n start-end (dur) | motion, light, sound`. "
           "Zoom any span with `frames.py --start --end`. On-screen text shows [zone]: top/upper/middle/lower/bottom.", ""]
-    hit_t = [h["t_s"] for h in hits]
+    if sync:
+        md[2] += (f" {len(onsets)} hit{'s' * (len(onsets) != 1)}; {sync['with_hit']} of {sync['cuts']} cuts have one within "
+                  f"{sync['window_ms']} ms" + (f" (median offset {sync['median_offset_ms']:+d} ms)."
+                                               if sync["with_hit"] else "."))
+        md[4] += (" `cut: hit +80 ms late` is the nearest hit to the cut that starts the shot (hits are timed to "
+                  "about 5-10 ms, cuts to one frame). Under dense music a hit can be hidden and the nearest one "
+                  "can be a note of the music, so `no hit` means none was measured, not that none is there.")
+    hit_t = [h["t_s"] for h in hits] if onsets is None else [o["t_s"] for o in onsets]
+    stamp = ts if onsets is None else common.clock_ms
+    at_cut = {p["cut_s"]: p for p in cut_sync or []}
     for s in shots:
         inside = hit_t[bisect.bisect_left(hit_t, s["start_s"]):bisect.bisect_left(hit_t, s["end_s"])]
-        extra = ("; " + ", ".join(f"sound hit {ts(t)}" for t in inside)) if inside else ""
+        extra = "; cut: " + audio.offset_words(at_cut[s["start_s"]]["offset_ms"]) if s["start_s"] in at_cut else ""
+        if len(inside) > 12:
+            extra += f"; {len(inside)} hits"
+        elif inside:
+            extra += "; " + ", ".join(f"sound hit {stamp(t)}" for t in inside)
         md.append(f"#{s['index']} {ts(s['start_s'])}-{ts(s['end_s'])} ({s['dur_s']:.1f}s) | "
                   f"{describe(s, still_below, busy_from)}{extra}")
     if onscreen:
@@ -379,7 +409,7 @@ def main() -> None:
         md += [f"- {ts(a)}-{ts(b)} ({b - a:.1f}s)" for a, b in silences[:400]]
     md_path = out / "index.md"
     md_path.write_text("\n".join(md) + "\n", encoding="utf-8")
-    print(f"[index] {len(shots)} shots, {len(hits)} sound hits, {len(silences)} silences"
+    print(f"[index] {len(shots)} shots, {len(hits if onsets is None else onsets)} sound hits, {len(silences)} silences"
           + (f", {len(onscreen)} on-screen text spans" if args.ocr else ""), file=sys.stderr)
     print(f"INDEX: {md_path.resolve()}")
 

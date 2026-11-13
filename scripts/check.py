@@ -7,6 +7,7 @@ Checks (each optional input switches its check on):
   silence   gaps longer than --min-silence
   picture   black frames, frozen stretches
   shots     cut count vs --expect-shots
+  sync      each cut's nearest sound hit and how many ms it is off (--sync-tol makes it PASS/FIX)
   text      every --terms entry appears on screen (OCR); near-misses flagged as typos
   zones     on-screen text inside app-overlay zones (TikTok/Reels/Shorts buttons and bars)
   script    spoken words vs --script, word by word (local transcript; never paid)
@@ -15,6 +16,7 @@ Usage:
   python3 check.py VIDEO --out-dir DIR [--expect-size 1080x1920] [--expect-fps 60]
       [--expect-lufs -14] [--max-peak -1] [--min-silence 0.3] [--expect-duration S]
       [--expect-shots N] [--terms terms.txt] [--script script.txt] [--transcript t.json]
+      [--cuts cuts.txt] [--sync-tol MS]
 Output: DIR/check.md, DIR/check.json; prints `CHECK: <path>`.
 """
 from __future__ import annotations
@@ -28,6 +30,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import audio  # noqa: E402
 import common  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -47,6 +50,11 @@ def words(text: str) -> list[str]:
 
 def norm(w: str) -> str:
     return w.strip(".,'").replace(",", "")
+
+
+def read_times(path: str) -> list[float]:
+    """Every number in the file, as seconds (planned cut times)."""
+    return [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", Path(path).read_text())]
 
 
 FREEZE_DIFF = 0.05     # mean |ΔY| (0–255, 180x320) below this = no visible change; encoder noise on a still is ~0.003–0.02
@@ -97,8 +105,7 @@ def picture_scan(video: str, fps: float, out: Path, args, shots: list[dict], res
         # one that stays is a cut, a pop-on or a jump, fine if planned.
         cuts = [s["start_s"] for s in shots[1:]]
         if args.cuts:
-            txt = Path(args.cuts).read_text()
-            cuts = [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", txt)]
+            cuts = read_times(args.cuts)
         glitches, jumps = [], []
         for k, x in enumerate(d):
             win = sorted(d[max(0, k - 8):k + 9])
@@ -165,8 +172,11 @@ def main() -> None:
     ap.add_argument("--freeze-s", type=float, default=0.5, help="flag stretches this long with no visible change")
     ap.add_argument("--mask-band", default="0.46-0.56",
                     help="frame-height band ignored by the freeze/glitch checks (one-word captions), or 'none'")
-    ap.add_argument("--cuts", help="file with planned cut times in seconds; jumps near them aren't listed")
+    ap.add_argument("--cuts", help="file with planned cut times in seconds; jumps near them aren't listed, "
+                                   "and hit sync is measured against them")
     ap.add_argument("--cut-tol", type=float, default=0.05)
+    ap.add_argument("--sync-tol", type=float,
+                    help="ms: FIX when a cut's nearest sound hit is further from the cut than this")
     ap.add_argument("--terms", help="text file, one expected on-screen term per line")
     ap.add_argument("--script", help="text file with the exact spoken script (plain words)")
     ap.add_argument("--transcript", help="existing transcript.json to use instead of transcribing")
@@ -225,6 +235,24 @@ def main() -> None:
               "index.py failed" if not idx else "no OCR engine (needs macOS Vision or Tesseract)")
 
     pic_rows, shot_rows = picture_scan(video, m["fps"], out, args, idx.get("shots", []), res)
+
+    # Hit-to-cut sync, against the planned cuts when given. A cut with no hit in reach is
+    # listed but never a FIX: under dense music a hit can be there and not be measurable.
+    sync_rows = []
+    if idx.get("onsets") is not None:
+        cut_times = read_times(args.cuts) if args.cuts else [p["cut_s"] for p in idx["cut_sync"]]
+        pairs = audio.pair_cuts(cut_times, [o["t_s"] for o in idx["onsets"]])
+        sync_rows = [f"- {common.clock_ms(p['cut_s'])} cut: {audio.offset_words(p['offset_ms'])}" for p in pairs]
+        if args.sync_tol is not None:
+            off = [p for p in pairs if p["offset_ms"] is not None and abs(p["offset_ms"]) > args.sync_tol]
+            none = sum(p["offset_ms"] is None for p in pairs)
+            res.append(("cut sync", not off,
+                        f"{len(off)} of {len(pairs)} cuts have their nearest hit more than {args.sync_tol:g} ms away"
+                        + ("" if not off else ": " + ", ".join(
+                            f"{common.clock_ms(p['cut_s'])} ({p['offset_ms']:+d} ms)" for p in off[:10]))
+                        + (f"; {none} with no hit within {audio.SYNC_WINDOW_S * 1000:.0f} ms (not counted)" if none else "")))
+    elif args.sync_tol is not None:
+        res.append(("cut sync", None, "skipped: " + ("hit timing didn't run" if m["has_audio"] else "no audio")))
 
     term_rows = []
     if args.terms and no_ocr:
@@ -303,6 +331,11 @@ def main() -> None:
         md += ["", "## Picture timeline", ""] + pic_rows
     md += ["", "## Per-shot picture", "", "luma 0–1 and mean saturation, medians over each shot (caption band included).", "",
            "| shot | time | luma | saturation | |", "|---|---|---|---|---|"] + shot_rows
+    if sync_rows:
+        md += ["", "## Cut sync", "",
+               f"Nearest sound hit to each {'planned' if args.cuts else 'detected'} cut (+ late, - early; hits are timed "
+               "to about 5-10 ms). Under dense music a hit can be hidden, and the nearest one can be a note of the music.",
+               ""] + sync_rows[:80]
     if term_rows:
         md += ["", "## On-screen terms", ""] + term_rows
     if zone_hits:

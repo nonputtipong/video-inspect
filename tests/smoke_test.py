@@ -2,7 +2,7 @@
 """End-to-end smoke test: every script on a generated clip, on any OS. Python stdlib only.
 
 Builds a 6 s clip (a test pattern with "VIDEO INSPECT 2026" printed near the top, a hard
-cut to colour bars at 3 s, a tone) inside
+cut to colour bars at 3 s, a tone, and a noise burst 80 ms after the cut) inside
 a folder with a Thai name and a space, plus an MPEG-TS copy, then runs index, frames,
 check, study and compare on them and checks the outputs make sense.
 
@@ -32,6 +32,7 @@ for _stream in (sys.stdout, sys.stderr):
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 TEXT_PNG = Path(__file__).resolve().parent / "fixtures" / "text.png"   # printed text for OCR
 CUT_AT = 3.0
+HIT_LATE_MS = 80                       # the noise burst starts this long after the cut
 failures: list[str] = []
 
 
@@ -61,9 +62,11 @@ def main() -> None:
         mp4, ts = folder / "คลิป.mp4", folder / "clip.ts"
         ffmpeg("-f", "lavfi", "-i", f"testsrc=s=640x360:r=30:d={CUT_AT}",
                "-f", "lavfi", "-i", f"smptebars=s=640x360:r=30:d={CUT_AT}",
-               "-f", "lavfi", "-i", f"sine=frequency=440:duration={2 * CUT_AT}", "-i", str(TEXT_PNG),
-               "-filter_complex", "[0:v][3:v]overlay=0:20,format=yuv420p[a];[a][1:v]concat=n=2:v=1:a=0[v]",
-               "-map", "[v]", "-map", "2:a",
+               "-f", "lavfi", "-i", f"sine=frequency=440:duration={2 * CUT_AT},volume=0.2", "-i", str(TEXT_PNG),
+               "-f", "lavfi", "-i", f"anoisesrc=d=0.05:a=0.6:seed=1,adelay={int(CUT_AT * 1000) + HIT_LATE_MS}:all=1",
+               "-filter_complex", "[0:v][3:v]overlay=0:20,format=yuv420p[a];[a][1:v]concat=n=2:v=1:a=0[v];"
+                                  "[2:a][4:a]amix=inputs=2:normalize=0:duration=first[au]",
+               "-map", "[v]", "-map", "[au]",
                "-c:v", "libx264", "-g", "60", "-pix_fmt", "yuv420p", "-c:a", "aac", str(mp4))
         ffmpeg("-i", str(mp4), "-c", "copy", "-f", "mpegts", str(ts))
         print(f"clip: {mp4}  (temp dir: {tempfile.gettempdir()})", flush=True)
@@ -75,6 +78,9 @@ def main() -> None:
         cuts = [s["start_s"] for s in idx["shots"][1:]]
         check(len(cuts) == 1 and abs(cuts[0] - CUT_AT) < 0.1, f"one cut found at {CUT_AT}s (got {cuts})")
         check(idx["has_audio"] and idx["silence_s"] == 0, "audio seen, no silence")
+        offsets = [p["offset_ms"] for p in idx["cut_sync"] or []]
+        check(len(idx["onsets"] or []) == 1 and len(offsets) == 1 and abs(offsets[0] - HIT_LATE_MS) <= 15,
+              f"one hit, {HIT_LATE_MS} ms after the cut (got {idx['onsets']}, offsets {offsets})")
         if idx["ocr_backend"]:
             texts = idx["onscreen_text"]
             hits = [o for o in texts if "INSPECT" in o["text"].upper()]
@@ -93,6 +99,18 @@ def main() -> None:
         check(len(ts_cuts) == 1 and abs(ts_cuts[0] - CUT_AT) < 0.1, f".ts --start 1 --end 5: cut at {CUT_AT}s (got {ts_cuts})")
         check(abs(ts_idx["shots"][0]["start_s"] - 1) < 0.01 and abs(ts_idx["shots"][-1]["end_s"] - 5) < 0.01,
               ".ts range is exactly 1-5 s")
+        ts_offsets = [p["offset_ms"] for p in ts_idx["cut_sync"] or []]
+        check(len(ts_offsets) == 1 and ts_offsets[0] is not None and abs(ts_offsets[0] - HIT_LATE_MS) <= 15,
+              f".ts range: the hit is still {HIT_LATE_MS} ms after the cut (got {ts_offsets})")
+
+        # A file whose sound starts 100 ms after its picture: hits must stay on the picture's clock
+        late = folder / "late.mkv"
+        ffmpeg("-i", str(mp4), "-itsoffset", "0.1", "-i", str(mp4), "-map", "0:v", "-map", "1:a", "-c", "copy", str(late))
+        run("index.py", str(late), "--out-dir", str(root / "idx_late"))
+        late_offsets = [p["offset_ms"] for p in json.loads(
+            (root / "idx_late" / "index.json").read_text(encoding="utf-8"))["cut_sync"] or []]
+        check(len(late_offsets) == 1 and late_offsets[0] is not None and abs(late_offsets[0] - HIT_LATE_MS - 100) <= 15,
+              f"sound stream starting 100 ms late: the hit reads {HIT_LATE_MS + 100} ms after the cut (got {late_offsets})")
 
         # frames.py: default mode from the index, and exact moments on mp4 vs .ts
         r = run("frames.py", str(mp4), "--out-dir", str(root / "fr"), "--index", str(root / "idx" / "index.json"))
@@ -125,17 +143,21 @@ def main() -> None:
         terms = root / "terms.txt"
         terms.write_text("0\n", encoding="utf-8")
         r = run("check.py", str(mp4), "--out-dir", str(root / "ck"), "--expect-size", "640x360",
-                "--expect-fps", "30", "--terms", str(terms))
+                "--expect-fps", "30", "--terms", str(terms), "--sync-tol", "40")
         ck = json.loads((root / "ck" / "check.json").read_text(encoding="utf-8"))
         byname = {c["name"]: c for c in ck["checks"]}
         check(r.returncode == 0 and byname["size"]["pass"] and byname["fps"]["pass"], "check.py: size and fps PASS")
         check(byname["black frames"]["pass"] is True, "check.py: no black frames")
+        check(byname["cut sync"]["pass"] is False and "+" in byname["cut sync"]["detail"],
+              f"check.py --sync-tol 40: the hit {HIT_LATE_MS} ms late is a FIX ({byname['cut sync']['detail']})")
         check((byname["overlay zones"]["pass"] is None) == (idx["ocr_backend"] is None),
               "check.py: overlay zones SKIPPED only without OCR")
 
         # study.py and compare.py
         r = run("study.py", str(mp4), "--out-dir", str(root / "st"), "--no-transcript")
         check(r.returncode == 0 and (root / "st" / "study.md").exists(), "study.py runs")
+        check("| 100% | +" in (root / "st" / "study.md").read_text(encoding="utf-8"),
+              "study.py: the cut has a hit, and it lands late")
         a, b = root / "a.png", root / "b.png"
         ffmpeg("-ss", "1", "-i", str(mp4), "-frames:v", "1", str(a))
         ffmpeg("-ss", "4", "-i", str(mp4), "-frames:v", "1", str(b))

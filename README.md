@@ -6,9 +6,9 @@ The scripts do the measuring. Claude does the judging.
 
 ## What it does
 
-- **Understand a video.** It builds a shot index (cuts, motion, light, sound hits, silences), on-screen text with screen positions, timestamped frame grids and a transcript, so Claude can summarize the video and cite times.
-- **Check a render before posting.** It produces one PASS/FIX report (SKIPPED for checks a missing tool can't run) covering size, fps, duration, loudness (LUFS) and true peak, silences, black, frozen or glitch frames, shot count, label spelling, text hidden under TikTok/Reels/Shorts buttons, and script vs speech.
-- **Study reference videos.** It measures cuts per minute, median shot length, sound hits, silence %, words per minute and an on-screen label timeline.
+- **Understand a video.** It builds a shot index (cuts, motion, light, silences, and sound hits timed to about 5-10 ms with each cut's offset to its nearest hit), on-screen text with screen positions, timestamped frame grids and a transcript, so Claude can summarize the video and cite times.
+- **Check a render before posting.** It produces one PASS/FIX report (SKIPPED for checks a missing tool can't run) covering size, fps, duration, loudness (LUFS) and true peak, silences, black, frozen or glitch frames, shot count, sound hits that land off their cuts (`--sync-tol`), label spelling, text hidden under TikTok/Reels/Shorts buttons, and script vs speech.
+- **Study reference videos.** It measures cuts per minute, median shot length, sound hits and how they sit on the cuts, silence %, words per minute and an on-screen label timeline.
 - **Compare stills with references.** It makes side-by-side boards plus measured brightness, contrast, saturation, warmth, shadows, highlights, fine detail and palette, and flags where a still falls outside the references' range.
 
 ## Requirements
@@ -68,7 +68,7 @@ python3 -I scripts/compare.py --stills a.png b.png --refs refs/ --out-dir work
 
 See [`SKILL.md`](SKILL.md) for every option and how Claude is told to read the output.
 
-Self-tests for the picture checks and for how frames.py spreads frames by motion:
+Self-tests for the picture checks, for how frames.py spreads frames by motion, and for the sound measures:
 
 ```bash
 uv run --no-project --with numpy python -I scripts/test_check_picture.py
@@ -76,6 +76,10 @@ uv run --no-project --with numpy python -I scripts/test_check_picture.py
 
 ```bash
 python3 -I scripts/test_frames_plan.py
+```
+
+```bash
+python3 -I scripts/test_audio.py
 ```
 
 End-to-end smoke test (every script on a generated clip; set `VI_SMOKE_TRANSCRIPT=1` to include faster-whisper). GitHub Actions runs it on Windows, Linux and macOS with Python 3.9 and 3.13:
@@ -91,6 +95,7 @@ SKILL.md                      Instructions Claude follows when the skill is used
 scripts/
   common.py                   Shared helpers: fenced temp folders, OCR backends, ffprobe
   index.py                    Shot index: cuts, motion, light, sound hits, silences, OCR text
+  audio.py                    Sound measures: hit onsets every 5 ms, hit-to-cut offsets
   frames.py                   Picks the frames worth seeing and tiles them into timestamped grids
   transcript.py               Local Whisper transcript (paid ElevenLabs only when unlocked)
   check.py                    Pre-posting QA report (PASS/FIX)
@@ -99,6 +104,7 @@ scripts/
   ocr.swift                   macOS Vision OCR helper (compiled to bin/ on first use)
   test_check_picture.py       Self-test for check.py's frozen and glitch frame detection
   test_frames_plan.py         Self-test for frames.py's motion-weighted fill frames
+  test_audio.py               Self-test for audio.py on generated sounds with known answers
 tests/
   smoke_test.py               End-to-end test of every script (run by GitHub Actions)
   fixtures/text.png           Printed text the smoke test overlays for OCR
