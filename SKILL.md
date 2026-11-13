@@ -33,6 +33,8 @@ Scripts live in `SKILL_DIR/scripts/` (the folder holding this file). Run them wi
 1. `python3 -I SKILL_DIR/scripts/transcript.py VIDEO --out WORK/transcript.json --lang en`. Start it first, in the background; it's the slow part.
 2. `python3 -I SKILL_DIR/scripts/index.py VIDEO --out-dir WORK --ocr [--ocr-lang th] [--ocr-fps 8] [--min-silence 0.3]`. OCR reads 4 frames a second by default; use `--ocr-fps 8` for one-word captions that change faster than that. Read `index.md` whole: one line per shot, sound hits, silences, and on-screen text with its `[zone]` (top/upper/middle/lower/bottom).
    - Sound hits are timed to about 5-10 ms (`sound hit 00:03.078`), and each shot line says how far its opening cut is from the nearest hit: `cut: hit +78 ms late`, `cut: hit -20 ms early`, or `cut: no hit within 250 ms`. `index.json` has them as `onsets` and `cut_sync`.
+   - Music timing: the summary line gives the tempo ("about 120 BPM") and how many cuts fall within 50 ms of a beat, beside the share that would by chance. Shot lines add the cut's distance to the nearest beat (`60 ms after the beat`). "No clear beat" means the rhythm wasn't regular enough to trust; it is not a guess at a tempo. Half and double time read the same, so 87 can be 174. One tempo is found for the whole range, so a video with several songs often reads "no clear beat". `index.json` has `tempo` (with every beat time) and `swells`.
+   - "Swells and drops" lists where short-term loudness moves 6 LU or more over 2 s. An abrupt step shows there too, as a rise over about 3 s.
    - Under dense music a hit can be hidden, and the nearest "hit" can be a note of the music. So `no hit` means none was measured, not that none is there. Look at the frames around it, or ask the user to listen.
 3. `python3 -I SKILL_DIR/scripts/frames.py VIDEO --out-dir WORK --index WORK/index.json`. Read every grid in the manifest in one message. Each cell has its time stamped top-left; cells aren't evenly spaced, so read the stamp.
 4. Read the transcript whole, then answer, citing times.
@@ -87,7 +89,7 @@ Tolerances: loudness passes within `--lufs-tol` (default 1 LU) of `--expect-lufs
 Read `check.md`. FIX items need fixing before posting. SKIPPED items couldn't run on this machine (no OCR engine, or no local Whisper for the script check); tell the user they weren't checked rather than calling them passed. Shot counts only see hard cuts, not camera moves inside one shot, so treat a mismatch as something to look into. Overlay-zone hits are text that the app's buttons or caption bar may cover; check the frames at those times. Then build `frames.py` grids around any FIX to confirm it by eye.
 
 ### Study reference videos
-`python3 -I SKILL_DIR/scripts/study.py V1 V2 ... --out-dir WORK` writes a table with cuts per minute, median shot, sound hits per minute, the share of cuts with a sound hit within 250 ms and the median hit offset (+ means hits land after their cuts), silence %, words and words per minute, plus per-video cut times, hit times and the labels in the upper frame. Pair it with `frames.py` grids to see what each cut shows. `--no-transcript` and `--no-ocr` skip the slow parts (words then read 0, wpm `–`, labels "none found"); `--lang` sets the language (default en).
+`python3 -I SKILL_DIR/scripts/study.py V1 V2 ... --out-dir WORK` writes a table with cuts per minute, median shot, sound hits per minute, the share of cuts with a sound hit within 250 ms and the median hit offset (+ means hits land after their cuts), BPM and the share of cuts on the beat, silence %, words and words per minute, plus per-video cut times, hit times and the labels in the upper frame. Pair it with `frames.py` grids to see what each cut shows. `--no-transcript` and `--no-ocr` skip the slow parts (words then read 0, wpm `–`, labels "none found"); `--lang` sets the language (default en).
 
 ### Compare stills with reference images
 `python3 -I SKILL_DIR/scripts/compare.py --stills a.png b.png --refs refs_dir --out-dir WORK`, then read
@@ -98,6 +100,7 @@ Read `check.md`. FIX items need fixing before posting. SKIPPED items couldn't ru
 
 ## Limits
 - No continuous motion (easing, bounce). Cut times are accurate to about one frame (17 ms at 60 fps), sound hits to about 5-10 ms on a clean sound.
+- Tempo works on music with a clear, steady beat and poorly on ambient beds, rubato or speech; it was tuned on generated click and drum patterns, not on a music library. Musical key is not measured.
 - Sound hits are found by level, above 150 Hz. A hit less than about 9 dB over the music under it, or a sound that is all sub-bass, is missed.
 - OCR reads printed and stylized text well, but tiny or heavily outlined text can be missed. Off macOS it uses Tesseract, which finds roughly half the words Vision does and some junk; `index.md` names the engine, so weigh its text accordingly. `check.py` reports "missing", so confirm in a grid before calling a term absent.
 - "Silence" means two things: `index.md` lists pauses below -35 dB (pacing), `check.py` fails only dead air below -45 dB.

@@ -2,7 +2,8 @@
 10 ms of where the sounds were planted, loud bass under them doesn't hide them or add false
 ones, and each cut is paired with the right hit and offset. Then the mix checks: a clipped
 stretch, a loudness jump, a bed too close to the voice and a buried effect are each found,
-and their clean twins are not.
+and their clean twins are not. Then music timing: a 120 BPM click track reads 120 with its
+beats in place, notes at random times read "no clear beat", and swells and drops are found.
 Usage: python3 -I scripts/test_audio.py   (needs ffmpeg)
 """
 import array
@@ -98,6 +99,28 @@ try:
     for name in ("clipped.wav", "clipped.m4a"):
         spans = audio.clipping(str(tmp / name))["spans"]
         assert len(spans) == 1 and abs(spans[0][0] - 2.0) <= 0.05 and abs(spans[0][1] - 2.5) <= 0.05, (name, spans)
+
+    # Music timing: clicks every half second are 120 BPM, and the beats land on the clicks
+    clicks = [0.0] * (20 * SR)
+    for k in range(1, 39):
+        add(clicks, k * 0.5, noise(0.004, 0.5))
+    save(clicks, tmp / "clicks.wav")
+    beat = audio.tempo(audio.rise(audio.envelope(str(tmp / "clicks.wav"), tmp)))
+    assert beat and abs(beat["bpm"] - 120) <= 0.5 and len(beat["beats"]) >= 36, beat
+    assert all(abs(b - round(b * 2) / 2) <= 0.010 for b in beat["beats"]), beat["beats"]
+    # Cuts on a beat, 60 ms after one, 40 ms before one, and where there are no beats
+    offsets = audio.beat_offsets([5.0, 7.06, 9.46, 25.0], beat["beats"], beat["bpm"])
+    assert offsets[3] is None and all(abs(a - b) <= 10 for a, b in zip(offsets, [0, 60, -40])), offsets
+    assert audio.beat_summary(offsets, 120) == {"tol_ms": 50, "cuts_on_beat": 2, "pct_cuts_on_beat": 50, "chance_pct": 20}
+
+    # Notes at random times, like speech: no beat to report
+    talk = [0.0] * (20 * SR)
+    t = 0.5
+    while t < 19:
+        add(talk, t, tone(rng.uniform(0.06, 0.2), rng.randint(150, 900), 0.3))
+        t += rng.uniform(0.12, 0.9)
+    save(talk, tmp / "talk.wav")
+    assert audio.tempo(audio.rise(audio.envelope(str(tmp / "talk.wav"), tmp))) is None
 finally:
     common.safe_rmtree(tmp)
 
@@ -131,4 +154,11 @@ quiet_bed = audio.voice_vs_bed(loudness(lambda t: -16 if talking(t) else -30), w
 assert 13 <= quiet_bed["margin_lu"] <= 15 and not quiet_bed["close"], quiet_bed
 assert audio.voice_vs_bed(step, []) is None and audio.voice_vs_bed(step, words[:4]) is None
 
-print("ok: hit onsets, cut sync and mix checks")
+# Swells and drops: 16 LU up over 4 s from 8 s, then 16 LU down over 4 s from 20 s. Flat is neither.
+ramp = loudness(lambda t: -34 + 16 * min(1, max(0, (t - 8) / 4)) - 16 * min(1, max(0, (t - 20) / 4)), 30.0)
+moves = audio.swells(ramp)
+assert [w["kind"] for w in moves] == ["swell", "drop"], moves
+assert abs(moves[0]["start_s"] - 8) <= 1.5 and moves[0]["change_lu"] >= 6 and moves[1]["change_lu"] <= -6, moves
+assert audio.swells(loudness(lambda t: -20)) == []
+
+print("ok: hit onsets, cut sync, mix checks and music timing")

@@ -78,6 +78,7 @@ def main() -> None:
         cuts = [s["start_s"] for s in idx["shots"][1:]]
         check(len(cuts) == 1 and abs(cuts[0] - CUT_AT) < 0.1, f"one cut found at {CUT_AT}s (got {cuts})")
         check(idx["has_audio"] and idx["silence_s"] == 0, "audio seen, no silence")
+        check(idx["tempo"] is None and idx["swells"] == [], "a steady tone has no beat and no swell")
         offsets = [p["offset_ms"] for p in idx["cut_sync"] or []]
         check(len(idx["onsets"] or []) == 1 and len(offsets) == 1 and abs(offsets[0] - HIT_LATE_MS) <= 15,
               f"one hit, {HIT_LATE_MS} ms after the cut (got {idx['onsets']}, offsets {offsets})")

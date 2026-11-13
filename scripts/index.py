@@ -13,6 +13,8 @@ How it measures (ffmpeg only, Python stdlib):
   audio   momentary and short-term loudness every 100 ms, and silence spans (in parallel).
   hits    level of every 5 ms of high-passed audio; a hit is where it rises out of its
           background (audio.py). Each cut is paired with the nearest hit within 250 ms.
+  music   tempo and a beat grid from the same 5 ms levels, each cut's distance to the nearest
+          beat, and swells and drops in short-term loudness.
   text    (--ocr) frames at a few per second, read only when the picture changed.
 
 Usage:
@@ -349,15 +351,24 @@ def main() -> None:
     silences = [(round(a + origin, 2), round(b + origin, 2)) for a, b in m["silences"]]
     # Precise hits and how far each cut is from its nearest one. None (not an empty list)
     # when the audio couldn't be measured, so "no hits" is never claimed without looking.
-    onsets = cut_sync = sync = cues = None
+    onsets = cut_sync = sync = cues = tempo = None
     env, env_t = m["env"]
     if env:
         env_t = origin + audio.env_start(video, start is not None, m["scene"][0]["t"] if m["scene"] else 0.0, env_t)
         if args.cues:
             cues = audio.cue_rises(env, env_t, common.read_times(args.cues))
-        onsets = [{**o, "t_s": round(o["t_s"] + env_t, 3)} for o in audio.find_onsets(env)]
+        strength = audio.rise(env)
+        onsets = [{**o, "t_s": round(o["t_s"] + env_t, 3)} for o in audio.find_onsets(env, strength)]
         cut_sync = audio.pair_cuts([s["start_s"] for s in shots[1:]], [o["t_s"] for o in onsets])
         sync = audio.sync_summary(cut_sync)
+        tempo = audio.tempo(strength)        # None: no clear beat
+        if tempo:
+            tempo["beats"] = [round(b + env_t, 3) for b in tempo["beats"]]
+            offs = audio.beat_offsets([p["cut_s"] for p in cut_sync], tempo["beats"], tempo["bpm"])
+            for p, off in zip(cut_sync, offs):
+                p["beat_offset_ms"] = off
+            tempo = {"bpm": tempo["bpm"], "corr": tempo["corr"], **audio.beat_summary(offs, tempo["bpm"]),
+                     "beats": tempo["beats"]}
     elif meta["has_audio"]:
         print("[index] hit timing skipped: the 5 ms level pass gave nothing", file=sys.stderr)
 
@@ -371,6 +382,8 @@ def main() -> None:
                     "momentary": [round(r["r128.M"], 1) for r in loud],
                     "short_term": [round(r["r128.S"], 1) for r in loud]}
 
+    swells = audio.swells(loudness) if loudness else None
+
     still_below, busy_from = motion_bands(shots)
 
     durations = sorted(s["dur_s"] for s in shots)
@@ -382,7 +395,8 @@ def main() -> None:
         "median_shot_s": round(durations[len(durations) // 2], 2) if durations else 0,
         "silence_s": round(sum(b - a for a, b in silences), 1),
         "shots": shots, "audio_events": hits,
-        "onsets": onsets, "cut_sync": cut_sync, "sync": sync, "cues": cues, "loudness": loudness,
+        "onsets": onsets, "cut_sync": cut_sync, "sync": sync, "cues": cues, "tempo": tempo, "swells": swells,
+        "loudness": loudness,
         "silences": [{"start_s": a, "end_s": b} for a, b in silences],
         "ocr_backend": backend,
         "onscreen_text": onscreen,
@@ -403,12 +417,22 @@ def main() -> None:
         md[4] += (" `cut: hit +80 ms late` is the nearest hit to the cut that starts the shot (hits are timed to "
                   "about 5-10 ms, cuts to one frame). Under dense music a hit can be hidden and the nearest one "
                   "can be a note of the music, so `no hit` means none was measured, not that none is there.")
+    if tempo:
+        md[2] += (f" Tempo about {tempo['bpm']:g} BPM (half or double time reads the same); "
+                  f"{tempo['cuts_on_beat']} of {len(cut_sync)} cuts within {tempo['tol_ms']} ms of a beat "
+                  f"({tempo['chance_pct']}% would be by chance).")
+        md[4] += " `60 ms after the beat` is the cut's distance to the nearest beat."
+    elif onsets is not None:
+        md[2] += " No clear beat."
     hit_t = [h["t_s"] for h in hits] if onsets is None else [o["t_s"] for o in onsets]
     stamp = ts if onsets is None else common.clock_ms
     at_cut = {p["cut_s"]: p for p in cut_sync or []}
     for s in shots:
         inside = hit_t[bisect.bisect_left(hit_t, s["start_s"]):bisect.bisect_left(hit_t, s["end_s"])]
         extra = "; cut: " + audio.offset_words(at_cut[s["start_s"]]["offset_ms"]) if s["start_s"] in at_cut else ""
+        beat = at_cut.get(s["start_s"], {}).get("beat_offset_ms")
+        if beat is not None:
+            extra += ", on the beat" if abs(beat) < 10 else f", {abs(beat)} ms {'after' if beat > 0 else 'before'} the beat"
         if len(inside) > 12:
             extra += f"; {len(inside)} hits"
         elif inside:
@@ -418,6 +442,11 @@ def main() -> None:
     if onscreen:
         md += ["", f"## On-screen text ({backend} OCR)", ""]
         md += [f"- {ts(o['start_s'])}-{ts(o['end_s'])} [{zone(o.get('box'))}] {o['text']}" for o in onscreen]
+    if swells:
+        md += ["", "## Swells and drops", "",
+               f"Short-term loudness moving {audio.SWELL_LU:g} LU or more over {audio.SWELL_OVER_S:g} s. "
+               "It averages 3 s, so an abrupt step also shows here as a rise over about 3 s.", ""]
+        md += [f"- {ts(w['start_s'])}-{ts(w['end_s'])} {w['kind']} {w['change_lu']:+.1f} LU" for w in swells[:200]]
     if silences:
         md += ["", f"## Silences (>= {args.min_silence}s)", ""]
         md += [f"- {ts(a)}-{ts(b)} ({b - a:.1f}s)" for a, b in silences[:400]]
