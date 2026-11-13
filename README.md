@@ -7,7 +7,7 @@ The scripts do the measuring. Claude does the judging.
 ## What it does
 
 - **Understand a video.** It builds a shot index (cuts, motion, light, silences, and sound hits timed to about 5-10 ms with each cut's offset to its nearest hit), on-screen text with screen positions, timestamped frame grids and a transcript, so Claude can summarize the video and cite times.
-- **Check a render before posting.** It produces one PASS/FIX report (SKIPPED for checks a missing tool can't run) covering size, fps, duration, loudness (LUFS) and true peak, silences, black, frozen or glitch frames, shot count, sound hits that land off their cuts (`--sync-tol`), label spelling, text hidden under TikTok/Reels/Shorts buttons, and script vs speech.
+- **Check a render before posting.** It produces one PASS/FIX report (SKIPPED for checks a missing tool can't run) covering size, fps, duration, loudness (LUFS), loudness range and true peak, clipping, sudden loudness jumps, music too close to the voice, planned sound effects that are buried, silences, black, frozen or glitch frames, shot count, sound hits that land off their cuts (`--sync-tol`), label spelling, text hidden under TikTok/Reels/Shorts buttons, and script vs speech.
 - **Study reference videos.** It measures cuts per minute, median shot length, sound hits and how they sit on the cuts, silence %, words per minute and an on-screen label timeline.
 - **Compare stills with references.** It makes side-by-side boards plus measured brightness, contrast, saturation, warmth, shadows, highlights, fine detail and palette, and flags where a still falls outside the references' range.
 
@@ -95,7 +95,7 @@ SKILL.md                      Instructions Claude follows when the skill is used
 scripts/
   common.py                   Shared helpers: fenced temp folders, OCR backends, ffprobe
   index.py                    Shot index: cuts, motion, light, sound hits, silences, OCR text
-  audio.py                    Sound measures: hit onsets every 5 ms, hit-to-cut offsets
+  audio.py                    Sound measures: hit onsets every 5 ms, hit-to-cut offsets, mix checks
   frames.py                   Picks the frames worth seeing and tiles them into timestamped grids
   transcript.py               Local Whisper transcript (paid ElevenLabs only when unlocked)
   check.py                    Pre-posting QA report (PASS/FIX)

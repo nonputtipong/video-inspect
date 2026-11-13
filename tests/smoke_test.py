@@ -142,14 +142,27 @@ def main() -> None:
         # check.py
         terms = root / "terms.txt"
         terms.write_text("0\n", encoding="utf-8")
+        cues = root / "cues.txt"
+        cues.write_text(f"{CUT_AT + HIT_LATE_MS / 1000}\n1.5\n", encoding="utf-8")   # the burst, and nothing
         r = run("check.py", str(mp4), "--out-dir", str(root / "ck"), "--expect-size", "640x360",
-                "--expect-fps", "30", "--terms", str(terms), "--sync-tol", "40")
+                "--expect-fps", "30", "--terms", str(terms), "--sync-tol", "40",
+                "--cues", str(cues))
         ck = json.loads((root / "ck" / "check.json").read_text(encoding="utf-8"))
         byname = {c["name"]: c for c in ck["checks"]}
         check(r.returncode == 0 and byname["size"]["pass"] and byname["fps"]["pass"], "check.py: size and fps PASS")
         check(byname["black frames"]["pass"] is True, "check.py: no black frames")
         check(byname["cut sync"]["pass"] is False and "+" in byname["cut sync"]["detail"],
               f"check.py --sync-tol 40: the hit {HIT_LATE_MS} ms late is a FIX ({byname['cut sync']['detail']})")
+        check(byname["clipping"]["pass"] is True and byname["loudness jumps"]["pass"] is True,
+              "check.py: no clipping, no loudness jump")
+        check("LRA" in byname["loudness"]["detail"] and ck["measures"]["lra_lu"] is not None,
+              f"check.py: loudness range reported ({byname['loudness']['detail']})")
+        check(byname["music over voice (rule of thumb)"]["pass"] is None,
+              "check.py: music over voice SKIPPED without a transcript")
+        check(byname["buried effects (rule of thumb)"]["pass"] is False
+              and byname["buried effects (rule of thumb)"]["detail"].startswith("1 of 2"),
+              f"check.py --cues: the burst stands out, the cue with nothing at it doesn't "
+              f"({byname['buried effects (rule of thumb)']['detail']})")
         check((byname["overlay zones"]["pass"] is None) == (idx["ocr_backend"] is None),
               "check.py: overlay zones SKIPPED only without OCR")
 

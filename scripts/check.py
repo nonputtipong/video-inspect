@@ -3,8 +3,10 @@
 (SKIPPED when a check couldn't run here, e.g. no OCR engine or no local Whisper).
 
 Checks (each optional input switches its check on):
-  specs     size, fps, duration, integrated loudness, true peak
+  specs     size, fps, duration, integrated loudness and its range (LRA), true peak
   silence   gaps longer than --min-silence
+  mix       clipped samples, sudden loudness jumps away from cuts, and two rules of thumb:
+            music too close to the voice (needs a transcript) and --cues effects that are buried
   picture   black frames, frozen stretches
   shots     cut count vs --expect-shots
   sync      each cut's nearest sound hit and how many ms it is off (--sync-tol makes it PASS/FIX)
@@ -16,7 +18,7 @@ Usage:
   python3 check.py VIDEO --out-dir DIR [--expect-size 1080x1920] [--expect-fps 60]
       [--expect-lufs -14] [--max-peak -1] [--min-silence 0.3] [--expect-duration S]
       [--expect-shots N] [--terms terms.txt] [--script script.txt] [--transcript t.json]
-      [--cuts cuts.txt] [--sync-tol MS]
+      [--cuts cuts.txt] [--sync-tol MS] [--cues cues.txt]
 Output: DIR/check.md, DIR/check.json; prints `CHECK: <path>`.
 """
 from __future__ import annotations
@@ -50,11 +52,6 @@ def words(text: str) -> list[str]:
 
 def norm(w: str) -> str:
     return w.strip(".,'").replace(",", "")
-
-
-def read_times(path: str) -> list[float]:
-    """Every number in the file, as seconds (planned cut times)."""
-    return [float(x) for x in re.findall(r"-?\d+(?:\.\d+)?", Path(path).read_text())]
 
 
 FREEZE_DIFF = 0.05     # mean |ΔY| (0–255, 180x320) below this = no visible change; encoder noise on a still is ~0.003–0.02
@@ -105,7 +102,7 @@ def picture_scan(video: str, fps: float, out: Path, args, shots: list[dict], res
         # one that stays is a cut, a pop-on or a jump, fine if planned.
         cuts = [s["start_s"] for s in shots[1:]]
         if args.cuts:
-            cuts = read_times(args.cuts)
+            cuts = common.read_times(args.cuts)
         glitches, jumps = [], []
         for k, x in enumerate(d):
             win = sorted(d[max(0, k - 8):k + 9])
@@ -177,6 +174,8 @@ def main() -> None:
     ap.add_argument("--cut-tol", type=float, default=0.05)
     ap.add_argument("--sync-tol", type=float,
                     help="ms: FIX when a cut's nearest sound hit is further from the cut than this")
+    ap.add_argument("--cues", help="file with planned sound-effect times in seconds; ones that don't rise "
+                                   "out of the sound before them are flagged (rule of thumb)")
     ap.add_argument("--terms", help="text file, one expected on-screen term per line")
     ap.add_argument("--script", help="text file with the exact spoken script (plain words)")
     ap.add_argument("--transcript", help="existing transcript.json to use instead of transcribing")
@@ -187,6 +186,7 @@ def main() -> None:
     out = Path(args.out_dir).expanduser()
     out.mkdir(parents=True, exist_ok=True)
     res: list[tuple[str, bool | None, str]] = []   # None = couldn't run here: SKIPPED, not FIX
+    measures: dict = {}                            # plain numbers, for check.json
 
     m = common.probe(video)
     w, h = (int(x) for x in args.expect_size.lower().split("x"))
@@ -202,10 +202,21 @@ def main() -> None:
         I = float(re.search(r"I:\s+(-?[\d.]+) LUFS", summ).group(1))
         tp = re.search(r"Peak:\s+(-?[\d.]+) dBFS", summ)
         peak = float(tp.group(1)) if tp else 0.0
-        res.append(("loudness", abs(I - args.expect_lufs) <= args.lufs_tol, f"{I} LUFS (want {args.expect_lufs:g} ±{args.lufs_tol:g})"))
+        lra = re.search(r"LRA:\s+(-?[\d.]+) LU", summ)
+        measures.update(lufs=I, true_peak_db=peak, lra_lu=float(lra.group(1)) if lra else None)
+        res.append(("loudness", abs(I - args.expect_lufs) <= args.lufs_tol,
+                    f"{I} LUFS (want {args.expect_lufs:g} ±{args.lufs_tol:g})"
+                    + (f"; loudness range (LRA) {lra.group(1)} LU" if lra else "")))
         res.append(("true peak", peak <= args.max_peak, f"{peak} dBFS (want ≤ {args.max_peak:g})"))
+        clip = audio.clipping(video)
+        measures["clipped_s"] = clip["seconds"]
+        res.append(("clipping", not clip["spans"],
+                    f"{clip['seconds']:g} s pinned at full scale ({audio.CLIP_SHARE:.0%}+ of samples within 0.5 dB of it: "
+                    "clipped, or limited with no headroom)"
+                    + ("" if not clip["spans"] else ": " + ", ".join(
+                        f"{common.fmt_ts(a)}–{common.fmt_ts(b)}" for a, b in clip["spans"][:10]))))
         s = run(["ffmpeg", "-hide_banner", "-nostats", "-i", video, "-af",
-                 f"silencedetect=noise=-45dB:d={args.min_silence}", "-f", "null", "-"])
+                 f"silencedetect=noise={common.SILENCE_DEAD_DB}dB:d={args.min_silence}", "-f", "null", "-"])
         starts = [float(x) for x in re.findall(r"silence_start: (-?[\d.]+)", s)]
         ends = [float(x) for x in re.findall(r"silence_end: (-?[\d.]+)", s)]
         gaps = [(a, b) for a, b in zip(starts, ends) if a > 0.05 and b < m["duration_s"] - 0.05]
@@ -219,7 +230,8 @@ def main() -> None:
     # Shots + on-screen text, via the index (local OCR).
     work = out / "index"
     r = subprocess.run([sys.executable, "-I", str(HERE / "index.py"), video, "--out-dir", str(work),
-                        "--ocr", "--ocr-lang", args.lang, "--min-silence", str(args.min_silence)],
+                        "--ocr", "--ocr-lang", args.lang, "--min-silence", str(args.min_silence)]
+                       + (["--cues", args.cues] if args.cues else []),
                        capture_output=True, text=True, encoding="utf-8", errors="replace")
     idx = json.loads((work / "index.json").read_text(encoding="utf-8")) if (work / "index.json").exists() else {}
     if r.returncode != 0 or not idx:
@@ -239,8 +251,8 @@ def main() -> None:
     # Hit-to-cut sync, against the planned cuts when given. A cut with no hit in reach is
     # listed but never a FIX: under dense music a hit can be there and not be measurable.
     sync_rows = []
+    cut_times = common.read_times(args.cuts) if args.cuts else [x["start_s"] for x in idx.get("shots", [])[1:]]
     if idx.get("onsets") is not None:
-        cut_times = read_times(args.cuts) if args.cuts else [p["cut_s"] for p in idx["cut_sync"]]
         pairs = audio.pair_cuts(cut_times, [o["t_s"] for o in idx["onsets"]])
         sync_rows = [f"- {common.clock_ms(p['cut_s'])} cut: {audio.offset_words(p['offset_ms'])}" for p in pairs]
         if args.sync_tol is not None:
@@ -253,6 +265,30 @@ def main() -> None:
                         + (f"; {none} with no hit within {audio.SYNC_WINDOW_S * 1000:.0f} ms (not counted)" if none else "")))
     elif args.sync_tol is not None:
         res.append(("cut sync", None, "skipped: " + ("hit timing didn't run" if m["has_audio"] else "no audio")))
+
+    # Mix: loudness jumps that no cut explains, and planned effects that don't stand out.
+    loud = idx.get("loudness")
+    if loud:
+        jumps = audio.loud_jumps(loud, cut_times)
+        res.append(("loudness jumps", not jumps,
+                    f"{len(jumps)} jumps of {audio.JUMP_LU:g}+ LU within {audio.JUMP_OVER_S:g} s away from cuts"
+                    + ("" if not jumps else ": " + ", ".join(
+                        f"{common.fmt_ts(j['t_s'])} (+{j['rise_lu']} LU)" for j in jumps[:10]))
+                    + f" (not judged in the first {audio.SHORT_TERM_S + audio.JUMP_OVER_S:g} s)"))
+    elif m["has_audio"]:
+        res.append(("loudness jumps", None, "skipped: index.py gave no loudness"))
+    cue_rows = []
+    if args.cues and idx.get("cues") is not None:
+        buried = [c for c in idx["cues"] if c["rise_db"] is not None and c["rise_db"] < audio.BURIED_DB]
+        cue_rows = [f"- {common.clock_ms(c['cue_s'])} " + ("past the end of the sound" if c["rise_db"] is None else
+                    f"rises {c['rise_db']:+.1f} dB over the sound before it"
+                    + (" (buried or missing?)" if c["rise_db"] < audio.BURIED_DB else "")) for c in idx["cues"]]
+        res.append(("buried effects (rule of thumb)", not buried,
+                    f"{len(buried)} of {len(idx['cues'])} planned effects rise less than {audio.BURIED_DB:g} dB "
+                    "over the 300 ms before them"
+                    + ("" if not buried else ": " + ", ".join(common.clock_ms(c["cue_s"]) for c in buried[:10]))))
+    elif args.cues:
+        res.append(("buried effects (rule of thumb)", None, "skipped: " + ("no hit timing" if m["has_audio"] else "no audio")))
 
     term_rows = []
     if args.terms and no_ocr:
@@ -292,14 +328,35 @@ def main() -> None:
     res.append(("overlay zones", None, f"skipped: {no_ocr}") if no_ocr else
                ("overlay zones", not zone_hits, f"{len(zone_hits)} text items inside app-overlay zones"))
 
-    diff_rows = []
-    if args.script:
+    tx = None
+    if args.script or args.transcript:
         tpath = Path(args.transcript).expanduser() if args.transcript else out / "transcript.json"
         if not args.transcript:
             subprocess.run([sys.executable, "-I", str(HERE / "transcript.py"), video, "--out", str(tpath),
                             "--lang", args.lang], capture_output=True, text=True, encoding="utf-8", errors="replace")
         if tpath.exists():
             tx = json.loads(tpath.read_text(encoding="utf-8"))
+
+    # Music over the voice needs word times, so it runs only when there is a transcript.
+    voice_rows = []
+    if loud:
+        name = "music over voice (rule of thumb)"
+        vb = audio.voice_vs_bed(loud, tx["words"]) if tx else None
+        if vb:
+            voice_rows = [f"- {common.fmt_ts(g['start_s'])}–{common.fmt_ts(g['end_s'])} "
+                          f"the bed is within {g['margin_lu']:.1f} LU of the voice" for g in vb["close"]]
+            res.append((name, vb["margin_lu"] >= audio.VOICE_BED_LU,
+                        f"speech {vb['voice_lufs']} LUFS, pauses between words {vb['bed_lufs']} LUFS: the bed sits "
+                        f"{vb['margin_lu']:.1f} LU under the voice (want {audio.VOICE_BED_LU:g}+); "
+                        f"{len(vb['close'])} of {vb['pauses']} pauses closer than that"))
+        else:
+            res.append((name, None, "skipped: " + (
+                "needs a transcript (--transcript FILE, or --script to make one)" if not tx else
+                f"no pause of {audio.PAUSE_MIN_S:g}-{audio.PAUSE_MAX_S:g} s between words to measure the bed in")))
+
+    diff_rows = []
+    if args.script:
+        if tx:
             heard = [(norm(x), w_["start_s"]) for w_ in tx["words"] for x in words(w_["text"])]
             want = [norm(x) for x in words(Path(args.script).read_text(encoding="utf-8"))]
             sm = difflib.SequenceMatcher(None, want, [x for x, _ in heard], autojunk=False)
@@ -336,6 +393,15 @@ def main() -> None:
                f"Nearest sound hit to each {'planned' if args.cuts else 'detected'} cut (+ late, - early; hits are timed "
                "to about 5-10 ms). Under dense music a hit can be hidden, and the nearest one can be a note of the music.",
                ""] + sync_rows[:80]
+    if cue_rows:
+        md += ["", "## Planned effects (rule of thumb)", "",
+               "Loudest 20 ms around each `--cues` time against the 300 ms before it, above 150 Hz. A busy bed "
+               "reads a few dB with nothing there, so a low number means buried or missing; listen before judging.",
+               ""] + cue_rows[:80]
+    if voice_rows:
+        md += ["", "## Music over voice (rule of thumb)", "",
+               "Pauses between words where the loudness stays close to the speech level. A sound effect in a "
+               "pause reads the same as loud music, so listen before judging.", ""] + voice_rows[:60]
     if term_rows:
         md += ["", "## On-screen terms", ""] + term_rows
     if zone_hits:
@@ -344,7 +410,7 @@ def main() -> None:
         md += ["", "## Script vs speech differences", ""] + diff_rows[:60]
     md += ["", f"Shot list and on-screen text timeline: `{work / 'index.md'}`."]
     (out / "check.md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    report = {"verdict": verdict, "checks": [
+    report = {"verdict": verdict, "measures": measures, "checks": [
         {"name": n, "pass": ok, "detail": d, **({"skipped": True} if ok is None else {})} for n, ok, d in res]}
     if skipped:
         report["skipped"] = skipped
