@@ -24,6 +24,7 @@ The scripts do the measuring. Claude does the judging.
   - [`uv`](https://docs.astral.sh/uv/) with `mlx-whisper` on Apple Silicon. It runs `mlx-whisper` (`whisper-large-v3-turbo`) through `uvx --offline`. The package and model must already be cached. Run once with `--allow-network` to download them.
   - or [`faster-whisper`](https://github.com/SYSTRAN/faster-whisper) on any platform, also run through `uv` (`uv run --with faster-whisper`), so nothing is installed into your system Python. The first run needs `--allow-network` to download the package and model (`base` by default; set `WHISPER_MODEL`, for example `small`, for a different one). After that it runs offline.
   - or ElevenLabs (paid). It is off unless you pass `--source elevenlabs --allow-paid` **and** set `VIDEO_INSPECT_ALLOW_PAID=1`. The key comes from `ELEVENLABS_API_KEY` in your shell. `.env` files are never read.
+- **Videos from a URL** (optional): [yt-dlp](https://github.com/yt-dlp/yt-dlp). The scripts read local files only, so Claude asks first, downloads the video with yt-dlp, then inspects the file.
 
 It works best on macOS (Apple Silicon). On Linux and Windows, use Tesseract and faster-whisper. On Windows, run the scripts with `python` or `py -3` instead of `python3`. Every script is tested on Windows, Linux and macOS by GitHub Actions (see Usage), including file and temp-folder paths with Thai characters.
 
@@ -40,6 +41,15 @@ On Windows (PowerShell), the skills folder is under your user profile:
 ```powershell
 git clone https://github.com/nonputtipong/video-inspect.git "$env:USERPROFILE\.claude\skills\video-inspect"
 ```
+
+Or install it as a plugin, from inside Claude Code:
+
+```text
+/plugin marketplace add nonputtipong/video-inspect
+/plugin install video-inspect@video-inspect
+```
+
+Use one of the two, not both, or Claude sees the skill twice.
 
 Claude Code picks it up the next time a session starts. Then just ask, for example "check this render before I post it" or "watch this video and summarize it".
 
@@ -125,6 +135,8 @@ tests/
   smoke_test.py               End-to-end test of every script (run by GitHub Actions)
   fixtures/text.png           Printed text the smoke test overlays for OCR
 .github/workflows/test.yml    CI on Windows, Linux and macOS
+.claude-plugin/
+  marketplace.json            Lets the repo be installed as a Claude Code plugin
 ```
 
 ## Safety defaults
