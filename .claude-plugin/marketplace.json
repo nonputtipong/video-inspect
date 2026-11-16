@@ -1,0 +1,14 @@
+{
+  "name": "video-inspect",
+  "owner": { "name": "nonputtipong" },
+  "description": "Free, local, offline video and image inspection for Claude Code.",
+  "plugins": [
+    {
+      "name": "video-inspect",
+      "source": ".",
+      "description": "Watch, check and study videos and images with local tools only: shot index, frame grids, OCR, local Whisper transcript, sound hits and beats, pre-posting QA, and comparison with reference videos and stills.",
+      "homepage": "https://github.com/nonputtipong/video-inspect",
+      "license": "MIT"
+    }
+  ]
+}
