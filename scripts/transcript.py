@@ -70,7 +70,8 @@ from faster_whisper import WhisperModel
 video, lang, name, local = sys.argv[1], sys.argv[2] or None, sys.argv[3], sys.argv[4] == "1"
 pcm = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", video, "-vn", "-ac", "1",
                       "-ar", "16000", "-f", "f32le", "-"], capture_output=True, check=True).stdout
-model = WhisperModel(name, local_files_only=local)
+# CPU always: "auto" picks an NVIDIA GPU and then needs CUDA 12 cuBLAS/cuDNN, which most PCs lack.
+model = WhisperModel(name, device="cpu", compute_type="int8", local_files_only=local)
 parts, info = model.transcribe(np.frombuffer(pcm, np.float32), language=lang, word_timestamps=True)
 segs, words = [], []
 for s in parts:
