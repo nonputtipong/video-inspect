@@ -43,9 +43,14 @@ because this uses the network, then download it with [yt-dlp](https://github.com
 yt-dlp --no-playlist --no-simulate --print after_move:filepath --merge-output-format mp4 -o "WORK/source.%(ext)s" -- "URL"
 ```
 The last line it prints is the file to pass to the scripts. If yt-dlp isn't installed, say so and give the
-install command (`brew install yt-dlp`, `pipx install yt-dlp`, `winget install yt-dlp.yt-dlp`); don't install
-it unasked. On a 403 or a login wall, tell the user what it said: don't retry with other clients, and use
-cookies (`--cookies-from-browser`) only when the user asks for that.
+install command (`brew install yt-dlp`, `uv tool install "yt-dlp[default]"`, `pipx install "yt-dlp[default]"`,
+`winget install yt-dlp.yt-dlp`); don't install it unasked. For YouTube, yt-dlp also needs the
+[deno](https://deno.com) JavaScript runtime and its challenge-solver scripts (`yt-dlp-ejs`, which the
+`[default]` extra installs). Without them it warns ("No supported JavaScript runtime", or "n challenge solving
+failed") and some formats may be missing or the download may fail. Pass that on with the fix (`brew install
+deno` or `winget install DenoLand.Deno`; reinstall a uv or pipx yt-dlp with `[default]`); don't install either
+unasked, and don't use `--remote-components`, which downloads code on each run. On a 403 or a login wall, tell
+the user what it said: don't retry with other clients, and use cookies (`--cookies-from-browser`) only when the user asks for that.
 
 A downloaded copy is the site's re-encode, not the file that was uploaded. It is fine for studying a
 reference (`study.py`, `index.py`, `frames.py`), but `check.py` on it measures the site's size, fps and
